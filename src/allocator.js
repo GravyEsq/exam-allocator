@@ -5,7 +5,8 @@ import {validateRooms} from './rooms.js';
 export function eligible(s,r){
  const e=effective(s);
  if(e.fixed)return r.type==='fixed'&&r.grade===10&&r.classroom===7&&r.computer;
- if(r.type==='fixed')return false;
+ if(s.grade===11&&s.classroom===7)return r.type==='closed'&&r.grade===11&&r.classroom===7&&(!e.computer||r.computer);
+ if(r.type==='fixed'||r.type==='closed')return false;
  if(s.classroom===7)return false; // Other grade-7 policies require explicit school instructions.
  return (r.type==='computer'||r.grade===s.grade) && (!e.computer||r.computer);
 }
@@ -34,7 +35,7 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
   const used=binary(`used${r}`,room.type==='computer'?computerOpenCost:0);
   constraint(`cap${r}`,[...load,term(used,-cap)],G.GLP_UP,0,0);
   constraint(`nonempty${r}`,[...load,term(used,-1)],G.GLP_LO,0,0);
-  if(room.type==='fixed')constraint(`wholeFixedClass${r}`,[...load,term(used,-students.filter(s=>effective(s).fixed).length)],G.GLP_FX,0,0);
+  if(room.type==='fixed'||room.type==='closed')constraint(`wholeClosedClass${r}`,[...load,term(used,-students.filter(s=>s.grade===room.grade&&s.classroom===room.classroom).length)],G.GLP_FX,0,0);
   const small=v.filter(v=>groups[v.g].small);
   if(small.length){
    const z=binary(`small${r}`);
@@ -69,6 +70,7 @@ export function audit(students,rooms,assignments,{allowMixedGrades=false}={}){
   const r=map.get(roomId);if(!r){errors.push('חדר לא מוכר');continue;}
   const members=keys.map(k=>students.find(s=>s.key===k));
   if(keys.length>r.capacity)errors.push(`חריגה מקיבולת ${r.name}`);
+  if((r.type==='fixed'||r.type==='closed')&&keys.length>0&&keys.length!==students.filter(s=>s.grade===r.grade&&s.classroom===r.classroom).length)errors.push(`הכיתה הסגורה ${r.name} חייבת להיבחן כיחידה שלמה`);
   if(members.some(s=>s&&effective(s).small)&&keys.length>r.smallCapacity)errors.push(`כיתה מצומצמת חורגת מקיבולתה בחדר ${r.name}`);
   if(r.smallOnly&&keys.length>r.smallCapacity)errors.push(`חריגה מקיבולת חדר מצומצם ${r.name}`);
   if(!allowMixedGrades&&new Set(members.filter(Boolean).map(s=>s.grade)).size>1)errors.push(`ערבוב שכבות בחדר ${r.name}`);
@@ -81,7 +83,7 @@ export async function allocate(allStudents,allRooms,glpk,options={}){
  const students=allStudents.filter(s=>s.active),rooms=allRooms.filter(r=>r.enabled),errors=validateRooms(allRooms);
  if(!students.length)errors.push('אין תלמידים פעילים לשיבוץ');
  for(const s of students){for(const problem of validateStudent(s))errors.push(`${s.name||s.key}: ${problem}`);if((s.issues||[]).some(i=>!i.resolution))errors.push(`${s.name}: יש תאים שממתינים להכרעה`);}
- if(students.some(s=>s.classroom===7&&s.grade!==10))errors.push('יש תלמידי כיתה 7 בשכבה שאינה י׳. כללי י׳7 אינם חלים עליהם; נדרשת הנחיית בית הספר לפני שיבוצם');
+ if(students.some(s=>s.classroom===7&&![10,11].includes(s.grade)))errors.push('יש תלמידי כיתה 7 בשכבה שטרם הוגדרו לה כללים. י׳7 וי״א7 מוגדרות ככיתות סגורות; נדרשת הנחיה לשכבה הנוספת');
  const ids=new Set();for(const s of students){if(ids.has(s.id))errors.push('תעודת זהות כפולה; יש לתקן לפני השיבוץ');ids.add(s.id);}
  if(errors.length)return {complete:false,assignments:{},unassigned:students.map(s=>({key:s.key,reason:errors.join('; ')})),errors};
  const solve=async partial=>{
@@ -104,8 +106,15 @@ export async function allocate(allStudents,allRooms,glpk,options={}){
 }
 export function diagnose(s,students,rooms,{timedOut=false}={}){
  const e=effective(s),eligibleRooms=rooms.filter(r=>eligible(s,r));
+ if(s.grade===11&&s.classroom===7){
+  const count=students.filter(t=>t.grade===11&&t.classroom===7).length,room=rooms.find(r=>r.type==='closed'&&r.grade===11&&r.classroom===7);
+  if(!room)return 'יש לפתוח את חדר י״א7: הכיתה נבחנת כקבוצה סגורה ואינה מתפצלת לחדרים אחרים';
+  if(students.some(t=>t.grade===11&&t.classroom===7&&effective(t).computer)&&!room.computer)return 'י״א7 נבחנת יחד בכיתתה. יש תלמידים הזקוקים למחשב; יש לספק אמצעי מחשב והקראה בחדר י״א7 ולסמן שהציוד זמין';
+  const needsSmall=students.some(t=>t.grade===11&&t.classroom===7&&effective(t).small),capacity=needsSmall||room.smallOnly?Math.min(room.capacity,room.smallCapacity):room.capacity;
+  return `י״א7 חייבת להיבחן יחד: ${count} תלמידים, וקיבולת החדר לפי הדרישות היא ${capacity}${needsSmall?' בגלל זכאות לכיתה מצומצמת':''}. יש להתאים את הקיבולת והציוד לכל הכיתה; לא יועברו אליה תלמידים אחרים ולא יפוצלו תלמידיה`;
+ }
  if(!eligibleRooms.length)return e.fixed?'יש לפתוח את חדר י׳7 ולוודא אמצעי מחשב והקראה לכיתה כולה':e.computer?'אין חדר מתאים למחשב; פתחו את 319 או מעבדה נוספת':'אין חדר רגיל מתאים לשכבה; הוסיפו חדר או הפעילו חדר קיים';
- if(e.computer&&!e.fixed){const needed=students.filter(t=>effective(t).computer&&!effective(t).fixed).length,available=rooms.filter(r=>r.computer&&r.type!=='fixed').reduce((n,r)=>n+(r.smallOnly?Math.min(r.capacity,r.smallCapacity):r.capacity),0);if(needed>available)return `${needed} תלמידים זקוקים למחשב, אך בחדרי המחשב הפתוחים יש ${available} מקומות בלבד. חסרים לפחות ${needed-available} מקומות; פתחו מעבדה נוספת או הגדילו קיבולת בחדר מתאים`;
+ if(e.computer&&!e.fixed){const needed=students.filter(t=>effective(t).computer&&!effective(t).fixed&&!(t.grade===11&&t.classroom===7)).length,available=rooms.filter(r=>r.computer&&r.type!=='fixed'&&r.type!=='closed').reduce((n,r)=>n+(r.smallOnly?Math.min(r.capacity,r.smallCapacity):r.capacity),0);if(needed>available)return `${needed} תלמידים זקוקים למחשב, אך בחדרי המחשב הפתוחים יש ${available} מקומות בלבד. חסרים לפחות ${needed-available} מקומות; פתחו מעבדה נוספת או הגדילו קיבולת בחדר מתאים`;
  }
  if(e.small&&eligibleRooms.every(r=>Math.min(r.capacity,r.smallCapacity)<1))return 'חסרה קיבולת מצומצמת בחדר מתאים';
  const group=students.filter(t=>t.grade===s.grade&&t.classroom===s.classroom&&!effective(t).time);
@@ -118,6 +127,7 @@ export function diagnose(s,students,rooms,{timedOut=false}={}){
 export function reasonFor(s,r){
  const e=effective(s),parts=[];
  if(e.fixed)return 'י׳7 נבחנת בכיתתה כקבוצה סגורה, לפי הוראת בית הספר';
+ if(s.grade===11&&s.classroom===7)parts.push('י״א7 נבחנת כקבוצה סגורה בחדרה, ללא תלמידים מכיתות אחרות');
  if(e.computer)parts.push('נדרש מחשב בשל הקראה או הקלדה');
  if(e.small)parts.push(`נדרשת כיתה מצומצמת: עד ${r.smallCapacity} נבחנים בסך הכול`);
  if(r.grade===s.grade&&r.classroom===s.classroom)parts.push('נשאר/ה בכיתת האם');

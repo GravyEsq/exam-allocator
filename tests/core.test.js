@@ -5,7 +5,7 @@ import {clean,headerKey,gradeOf,validateStudent} from '../src/normalize.js';
 import {parseRows,dataProblems,refreshImportedRules} from '../src/importer.js';
 import {interpretCell,effective,accommodationText} from '../src/rules.js';
 import {candidates,matchLines} from '../src/matching.js';
-import {defaultRooms} from '../src/rooms.js';
+import {defaultRooms,ensureGrade11Class7Room} from '../src/rooms.js';
 import {allocate,audit} from '../src/allocator.js';
 import {reportHTML,assignmentCSV} from '../src/reports.js';
 const require=createRequire(import.meta.url),glpk=require('../vendor/glpk-node.cjs')();
@@ -39,7 +39,7 @@ test('joint solver finds a solution when a home-first greedy allocation would bl
 test('grade-10 classroom-7 stays complete and isolated, no others can enter',async()=>{const ss=[...make(5,{grade:10,classroom:7,time:25}),...make(4,{grade:10,classroom:1})],rooms=defaultRooms([10]),r=await allocate(ss,rooms,glpk);assert.equal(r.complete,true);assert.equal(r.assignments.g10c7.length,5);assert.ok(r.assignments.g10c7.every(k=>ss.find(s=>s.key===k).classroom===7));rooms.find(r=>r.id==='g10c7').capacity=4;rooms.find(r=>r.id==='g10c7').smallCapacity=4;const bad=await allocate(ss,rooms,glpk);assert.equal(bad.complete,false);assert.equal(bad.unassigned.filter(u=>ss.find(s=>s.key===u.key).classroom===7).length,5);});
 test('all active students appear exactly once, excluded students do not appear',async()=>{const ss=[...make(12),...make(8,{classroom:2,time:25})];ss[0].active=false;const rooms=[regular('A',1),regular('B',2)],r=await allocate(ss,rooms,glpk);assert.equal(r.complete,true);const keys=Object.values(r.assignments).flat();assert.equal(keys.length,19);assert.equal(new Set(keys).size,19);assert.ok(!keys.includes(ss[0].key));});
 test('separate-grade mode does not double book a shared computer room',async()=>{const ss=[...make(5,{grade:10,typing:true,time:25}),...make(5,{grade:11,typing:true,time:25})],rooms=[pc('319')];const separate=await allocate(ss,rooms,glpk,{allowMixedGrades:false});assert.equal(separate.complete,false);const joint=await allocate(ss,rooms,glpk,{allowMixedGrades:true});assert.equal(joint.complete,true);});
-test('duplicate IDs and unsupported grade-7 policy block allocation',async()=>{const ss=make(4);ss[1].id=ss[0].id;assert.equal((await allocate(ss,[regular('A')],glpk)).complete,false);assert.equal((await allocate(make(4,{classroom:7}),[regular('A',7)],glpk)).complete,false);});
+test('duplicate IDs and unsupported grade-7 policy block allocation',async()=>{const ss=make(4);ss[1].id=ss[0].id;assert.equal((await allocate(ss,[regular('A')],glpk)).complete,false);assert.equal((await allocate(make(4,{grade:12,classroom:7}),[{...regular('A',7),grade:12}],glpk)).complete,false);});
 test('reports restrict each document to one grade, show only public student information, and escape HTML',()=>{const ss=make(8,{time:25});ss[0].name='<script>פיקטיבי</script>';const room=regular('A'),r={complete:true,assignments:{A:ss.map(s=>s.key)}};const students=reportHTML('students',11,ss,[room],r);assert.ok(!students.includes('25%'));assert.ok(students.includes('&lt;script&gt;'));assert.ok(!students.includes('תאריך'));assert.equal((students.match(/class="sheet"/g)||[]).length,1);assert.throws(()=>reportHTML('students',null,ss,[room],r));const csv=assignmentCSV(ss,[room],r);assert.ok(csv.startsWith('\uFEFF'));assert.ok(csv.includes(ss[0].id));});
 test('independent audit detects missing, duplicates, capacity and social violations',()=>{const ss=make(5),rooms=[regular('A',1,4)];const r=audit(ss,rooms,{A:[ss[0].key,ss[0].key,...ss.slice(1).map(s=>s.key)]});assert.ok(r.errors.length>=2);assert.equal(audit(ss,rooms,{A:[ss[0].key]}).missing.length,4);});
 
@@ -112,4 +112,34 @@ test('explicit prior review decisions survive refresh, but cannot override an ex
  const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','הקלדה','הקראת שאלון - דלי מלל'],['001234567','שם פיקטיבי','יא',1,'X','H']]);
  const s=students[0];s.original.accommodations=[];s.issues=[{key:s.key+':4',kind:'typing',resolution:'ignore',source:{column:'הקלדה',value:'X'}},{key:s.key+':5',kind:'reading',resolution:'grant',source:{column:'הקראת שאלון - דלי מלל',value:'H'}}];
  refreshImportedRules(students);assert.equal(effective(s).typing,false);assert.equal(effective(s).reading,false);assert.equal(s.issues.length,1);assert.equal(s.issues[0].resolution,'ignore');assert.equal(dataProblems(students).length,0);
+});
+test('grade-11 class 7 has a closed room of 38, stays together, excludes outsiders and grants no extra accommodations',async()=>{
+ const ss=[...make(2,{classroom:7}),...make(4)],rooms=defaultRooms([11]),room=rooms.find(r=>r.id==='g11c7');
+ assert.equal(room.type,'closed');assert.equal(room.capacity,38);
+ assert.equal(effective(ss[0]).differential,false);assert.equal(effective(ss[0]).computer,false);assert.equal(effective(ss[0]).time,0);
+ const r=await allocate(ss,rooms,glpk);assert.equal(r.complete,true);assert.equal(r.assignments.g11c7.length,2);assert.ok(r.assignments.g11c7.every(k=>ss.find(s=>s.key===k).classroom===7));assert.equal(audit(ss,rooms,r.assignments).errors.length,0);
+});
+test('grade-11 class 7 needs its computer accommodations inside its own room and never splits',async()=>{
+ const ss=[...make(1,{classroom:7,typing:true,time:25}),...make(1,{classroom:7,time:33}),...make(4)],rooms=defaultRooms([11]);
+ ss[1].id='899999998';
+ const unavailable=await allocate(ss,rooms,glpk);assert.equal(unavailable.complete,false);assert.equal(unavailable.unassigned.filter(u=>ss.find(s=>s.key===u.key).classroom===7).length,2);assert.match(unavailable.unassigned[0].reason,/ציוד|מחשב/);
+ rooms.find(r=>r.id==='g11c7').computer=true;
+ const ready=await allocate(ss,rooms,glpk);assert.equal(ready.complete,true);assert.equal(ready.assignments.g11c7.length,2);assert.equal(Object.values(ready.assignments).flat().length,6);
+});
+test('grade-11 class 7 respects total capacity and any independently granted small-class requirement',async()=>{
+ const rooms=defaultRooms([11]);const tooMany=await allocate(make(39,{classroom:7,time:25}),rooms,glpk);assert.equal(tooMany.complete,false);assert.equal(tooMany.unassigned.length,39);assert.ok(!tooMany.assignments.g11c7);
+ const ss=[...make(1,{classroom:7,small:true,time:33}),...make(15,{classroom:7,time:25})];ss[0].id='899999997';
+ const small=await allocate(ss,rooms,glpk);assert.equal(small.complete,false);assert.equal(small.unassigned.length,16);assert.match(small.unassigned[0].reason,/מצומצמת/);
+ const ready=await allocate(ss.slice(0,15),rooms,glpk);assert.equal(ready.complete,true);assert.equal(ready.assignments.g11c7.length,15);
+});
+test('closed-class audit rejects a partial class or outsiders even when room capacity is sufficient',()=>{
+ const ss=[...make(2,{classroom:7}),...make(4)],rooms=defaultRooms([11]);
+ assert.ok(audit(ss,rooms,{g11c7:[ss[0].key]}).errors.some(x=>x.includes('יחידה שלמה')));
+ assert.ok(audit(ss,rooms,{g11c7:[ss[0].key,ss[2].key]}).errors.some(x=>x.includes('לא מתאים')));
+});
+test('old room settings gain the grade-11 class-7 room while preserving existing edits',()=>{
+ const rooms=defaultRooms([11]).filter(r=>r.id!=='g11c7');rooms[0].capacity=29;
+ assert.equal(ensureGrade11Class7Room(rooms,[11]),true);assert.equal(rooms[0].capacity,29);assert.equal(rooms.find(r=>r.id==='g11c7').capacity,38);assert.equal(ensureGrade11Class7Room(rooms,[11]),false);
+ const custom=[{id:'custom',name:'יא 7',grade:11,classroom:null,type:'regular',capacity:28,smallCapacity:14,computer:true,enabled:false}];
+ assert.equal(ensureGrade11Class7Room(custom,[11]),true);assert.equal(custom.length,1);assert.equal(custom[0].type,'closed');assert.equal(custom[0].classroom,7);assert.equal(custom[0].capacity,28);assert.equal(custom[0].computer,true);assert.equal(custom[0].enabled,false);
 });
