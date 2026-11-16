@@ -1,5 +1,5 @@
 import {clean} from './normalize.js';
-export function nameTokens(name){return clean(name).replace(/["'\-]/g,' ').split(' ').filter(Boolean).sort();}
+export function nameTokens(name){return clean(name).replace(/["']/g,'').replace(/\-/g,' ').split(' ').filter(Boolean).sort();}
 function subset(a,b){const remaining=[...b];return a.every(t=>{const i=remaining.indexOf(t);if(i<0)return false;remaining.splice(i,1);return true;});}
 export function candidates(name,students){
  const a=nameTokens(name);if(a.length<2)return [];
