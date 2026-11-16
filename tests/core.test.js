@@ -30,11 +30,44 @@ test('any automatically assigned pupil can move repeatedly and undo returns the 
  const ss=make(8),rooms=[regular('a'),regular('b',2),regular('c',3)],base=await allocate(ss,rooms,glpk),key=ss[0].key,original=Object.keys(base.assignments).find(id=>base.assignments[id].includes(key));let r=placeManually(base,ss,rooms,key,'b');r=placeManually(r,ss,rooms,key,'c');assert.equal(Object.values(r.assignments).flat().filter(k=>k===key).length,1);assert.equal(r.manualPlacements[0].originalRoomId,original);r=undoManualPlacement(r,ss,rooms,key);assert.equal(r.complete,true);assert.ok(r.assignments[original].includes(key));assert.equal(r.manualPlacements.length,0);assert.equal(r.stats.assigned,8);
 });
 
-test('ordinary rooms avoid a full-versus-half-empty split even when pupils could all remain at home',async()=>{
+test('ordinary rooms balance pupils with the same time entitlement even when they could all remain at home',async()=>{
  for(const time of [0,25]){
-  const ss=[...make(38),...make(19,{classroom:2,time})],rooms=[regular('a'),regular('b',2)],r=await allocate(ss,rooms,glpk);
+  const ss=[...make(38,{time}),...make(19,{classroom:2,time})],rooms=[regular('a'),regular('b',2)],r=await allocate(ss,rooms,glpk);
   assert.equal(r.complete,true);const loads=Object.values(r.assignments).map(keys=>keys.length);assert.equal(loads.length,2);assert.ok(Math.max(...loads)-Math.min(...loads)<=5,loads.join('/'));assert.deepEqual(audit(ss,rooms,r.assignments).errors,[]);
  }
+});
+test('time separation takes priority over load balance and staying in the home class',async()=>{
+ const ss=[...make(38),...make(19,{classroom:2,time:25})];
+ for(const rooms of [[regular('a'),regular('b',2)],[regular('a'),regular('b',2),regular('c',3)]]){
+  const r=await allocate(ss,rooms,glpk);assert.equal(r.complete,true);assert.equal(r.optimal,true);
+  for(const keys of Object.values(r.assignments))assert.equal(new Set(keys.map(k=>!!effective(ss.find(s=>s.key===k)).time)).size,1);
+  const loads=Object.values(r.assignments).map(keys=>keys.length).sort((a,b)=>a-b);
+  if(rooms.length===2)assert.deepEqual(loads,[19,38]);else {assert.equal(loads.length,3);assert.ok(loads.at(-1)-loads[0]<=4,loads.join('/'));}
+ }
+});
+test('a forced mixed pair and an isolated class do not disable time separation for the remaining classes',async()=>{
+ const ss=uniqueIds([...make(14),...make(30,{classroom:2,time:25}),...make(8,{classroom:3}),...make(8,{classroom:3,time:25}),...make(12,{classroom:4}),...make(12,{classroom:4,time:25}),...make(12,{classroom:5}),...make(12,{classroom:5,time:25})]);
+ const rooms=Array.from({length:6},(_,i)=>regular(`r${i+1}`,i+1)),directives=[pair,{type:'isolate',classes:['11:3']}],r=await allocate(ss,rooms,glpk,{directives});
+ assert.equal(r.complete,true);assert.equal(r.optimal,true);assert.deepEqual(audit(ss,rooms,r.assignments,{directives}).errors,[]);
+ for(const id of ['r1','r2']){const members=r.assignments[id].map(k=>ss.find(s=>s.key===k));assert.equal(members.filter(s=>s.classroom===1).length,7);assert.equal(members.filter(s=>s.classroom===2).length,15);}
+ assert.equal(r.assignments.r3.length,16);assert.equal(new Set(r.assignments.r3.map(k=>!!effective(ss.find(s=>s.key===k)).time)).size,2);
+ for(const [id,keys]of Object.entries(r.assignments).filter(([id])=>!['r1','r2','r3'].includes(id)))assert.equal(new Set(keys.map(k=>!!effective(ss.find(s=>s.key===k)).time)).size,1,id);
+ assert.equal(Object.values(r.assignments).flat().length,108);
+});
+test('unavoidable time mixing retains a complete allocation rather than dropping pupils',async()=>{
+ const ss=uniqueIds([...make(8),...make(8,{time:25})]),rooms=[regular('only')],r=await allocate(ss,rooms,glpk);
+ assert.equal(r.complete,true);assert.equal(r.assignments.only.length,16);assert.equal(r.stats.unassigned,0);
+});
+test('partial allocation maximizes assigned pupils before optimizing time separation',async()=>{
+ const ss=uniqueIds([...make(8),...make(8,{time:25})]),rooms=[regular('only',1,12)],r=await allocate(ss,rooms,glpk);
+ assert.equal(r.complete,false);assert.equal(r.stats.assigned,12);assert.equal(r.stats.unassigned,4);assert.equal(r.assignments.only.length,12);
+ assert.equal(new Set(r.assignments.only.map(k=>!!effective(ss.find(s=>s.key===k)).time)).size,2);
+});
+test('a timeout while balancing preserves the feasible result with optimized time separation',async()=>{
+ const ss=uniqueIds([...make(12),...make(12,{time:25}),...make(12,{classroom:2}),...make(12,{classroom:2,time:25})]),rooms=[regular('a'),regular('b',2)];let stopped=false;
+ const limited={...glpk,solve:(lp,options)=>{if(lp.objective.vars.some(v=>v.name.startsWith('slot'))){stopped=true;return {result:{status:glpk.GLP_UNDEF,vars:{}}};}return glpk.solve(lp,options);}};
+ const r=await allocate(ss,rooms,limited);assert.equal(stopped,true);assert.equal(r.complete,true);assert.equal(r.optimal,false);assert.equal(r.timedOut,true);
+ for(const keys of Object.values(r.assignments))assert.equal(new Set(keys.map(k=>!!effective(ss.find(s=>s.key===k)).time)).size,1);
 });
 test('several ordinary rooms balance without exceeding smaller-room capacity or breaking the social minimum',async()=>{
  const counts=[38,38,18,18,18,18],ss=counts.flatMap((n,i)=>make(n,{classroom:i+1})),rooms=counts.map((_,i)=>regular(`r${i}`,i+1,i>=4?28:38));

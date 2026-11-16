@@ -21,9 +21,10 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
  const groups=groupStudents(students),G=glpk,lp={name:'exam',objective:{direction:G.GLP_MIN,name:'cost',vars:[]},subjectTo:[],bounds:[],binaries:[],generals:[]},variables=[];
  const term=(name,coef=1)=>({name,coef});
  const constraint=(name,vars,type,lb=0,ub=0)=>lp.subjectTo.push({name,vars,bnds:{type,lb,ub}});
- const cost=(name,coef)=>{if(coef)lp.objective.vars.push(term(name,coef));};
- const binary=(name,coef=0)=>{lp.binaries.push(name);cost(name,coef);return name;};
- const n=students.length, moveCost=20, mixCost=100, computerOpenCost=10000*(n+1);
+ const objectives={coverage:[],computers:[],isolation:[],separation:[],layout:[]};
+ const cost=(name,coef,priority='layout')=>{if(coef)objectives[priority].push(term(name,coef));};
+ const binary=(name,coef=0,priority)=>{lp.binaries.push(name);cost(name,coef,priority);return name;};
+ const moveCost=20;
  for(let g=0;g<groups.length;g++){
   const group=groups[g],vars=[];
   for(let r=0;r<rooms.length;r++)if(eligible(group.students[0],rooms[r],{allowMixedGrades,directives})&&(!directives.some(d=>pairParticipant(group.students[0],d))||(rooms[r].type==='regular'&&!rooms[r].smallOnly))){
@@ -31,12 +32,12 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
    const home=rooms[r].type==='regular'&&rooms[r].grade===group.grade&&rooms[r].classroom===group.classroom;
    cost(name,home?0:moveCost);
   }
-  if(partial){const name=`u${g}`;lp.generals.push(name);lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:group.students.length});vars.push(term(name));cost(name,1e9);}
+  if(partial){const name=`u${g}`;lp.generals.push(name);lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:group.students.length});vars.push(term(name));cost(name,1,'coverage');}
   constraint(`all${g}`,vars,G.GLP_FX,group.students.length,group.students.length);
  }
  for(let r=0;r<rooms.length;r++){
   const room=rooms[r],v=variables.filter(v=>v.r===r),load=v.map(v=>term(v.name)),cap=room.smallOnly?Math.min(room.capacity,room.smallCapacity):room.capacity;
-  const used=binary(`used${r}`,room.type==='computer'?computerOpenCost:0);
+  const used=binary(`used${r}`,room.type==='computer'?1:0,'computers');
   constraint(`cap${r}`,[...load,term(used,-cap)],G.GLP_UP,0,0);
   constraint(`nonempty${r}`,[...load,term(used,-1)],G.GLP_LO,0,0);
   // User directives are hard constraints, including in the partial-solution model.
@@ -44,7 +45,7 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
   for(let i=0;i<directives.length;i++){
    const d=directives[i],own=v.filter(x=>d.type==='pair'?pairParticipant(groups[x.g].students[0],d):isolationParticipant(groups[x.g].students[0],d));
    if(!own.length)continue;
-   const z=binary(`directive${i}_${r}`,d.type==='isolate'?1000*(n+1):0),other=v.filter(x=>d.type==='pair'?!own.includes(x):classKey(groups[x.g])!==d.classes[0]);
+   const z=binary(`directive${i}_${r}`,d.type==='isolate'?1:0,'isolation'),other=v.filter(x=>d.type==='pair'?!own.includes(x):classKey(groups[x.g])!==d.classes[0]);
    constraint(`directiveOwn${i}_${r}`,[...own.map(x=>term(x.name)),term(z,-cap)],G.GLP_UP,0,0);
    constraint(`directiveExclusive${i}_${r}`,[...other.map(x=>term(x.name)),term(z,cap)],G.GLP_UP,0,cap);
    if(d.type==='isolate')isolationFlags.push(z);
@@ -68,20 +69,42 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
    constraint(`socialMax${y}`,[...subset,term(y,-cap)],G.GLP_UP,0,0);
   }
   const time=v.filter(v=>groups[v.g].time).map(v=>term(v.name)),noTime=v.filter(v=>!groups[v.g].time).map(v=>term(v.name));
-  const hasT=binary(`hasT${r}`),hasN=binary(`hasN${r}`),mixed=binary(`mixed${r}`,mixCost);
+  const hasT=binary(`hasT${r}`),hasN=binary(`hasN${r}`),mixed=binary(`mixed${r}`,1,'separation');
   constraint(`linkT${r}`,[...time,term(hasT,-cap)],G.GLP_UP,0,0);constraint(`linkN${r}`,[...noTime,term(hasN,-cap)],G.GLP_UP,0,0);
   constraint(`mixedRoom${r}`,[term(hasT),term(hasN),term(mixed,-1),...isolationFlags.map(z=>term(z,-1))],G.GLP_UP,0,1);
   if(!allowMixedGrades){
    const flags=[];for(const grade of new Set(v.map(v=>groups[v.g].grade))){const z=binary(`grade${r}_${grade}`);flags.push(term(z));constraint(`gradeLink${r}_${grade}`,[...v.filter(v=>groups[v.g].grade===grade).map(v=>term(v.name)),term(z,-cap)],G.GLP_UP,0,0);}
    if(flags.length)constraint(`oneGrade${r}`,flags,G.GLP_UP,0,1);
   }
-  // Large occupancy gaps outweigh staying home or avoiding one mixed-time room.
-  // These are soft preferences: small gaps are acceptable and mandatory rules still apply.
+  // Balance and staying home are optimized only after fixing the best time separation.
   const slots=[];
   for(let k=1;k<=cap;k++){const name=`slot${r}_${k}`;slots.push(term(name,-1));lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:1});cost(name,(2*k-1)*4);}
   constraint(`loadCost${r}`,[...load,...slots],G.GLP_FX,0,0);
  }
- return {lp,groups,variables};
+ lp.objective.vars=objectives.layout;
+ return {lp,groups,variables,objectives};
+}
+
+// Solve priorities separately and lock each optimum before considering the next one.
+// No number of home-class moves or load improvements can buy another mixed room.
+async function solvePriorities(model,glpk,timeLimit){
+ const deadline=performance.now()+timeLimit*1000,priorities=Object.entries(model.objectives).filter(([,vars])=>vars.length);
+ if(!priorities.length)priorities.push(['feasibility',[]]);
+ let best=null;
+ for(let i=0;i<priorities.length;i++){
+  const [name,vars]=priorities[i],remaining=(deadline-performance.now())/1000;
+  if(remaining<=0&&best)return {solved:best,optimal:false,timedOut:true};
+  model.lp.objective.vars=vars;
+  const response=await glpk.solve(model.lp,{msglev:glpk.GLP_MSG_OFF,presol:true,tmlim:Math.max(.001,remaining),mipgap:0}),solved=response.result||response;
+  if(![glpk.GLP_OPT,glpk.GLP_FEAS].includes(solved.status))return {solved:best||solved,optimal:false,timedOut:!!best||solved.status!==glpk.GLP_NOFEAS};
+  best=solved;
+  if(solved.status!==glpk.GLP_OPT)return {solved,optimal:false,timedOut:true};
+  if(i<priorities.length-1){
+   const value=Math.round(vars.reduce((sum,v)=>sum+v.coef*(solved.vars[v.name]||0),0));
+   model.lp.subjectTo.push({name:`priority_${name}`,vars,bnds:{type:glpk.GLP_FX,lb:value,ub:value}});
+  }
+ }
+ return {solved:best,optimal:true,timedOut:false};
 }
 export function audit(students,rooms,assignments,{allowMixedGrades=false,directives=[]}={}){
  const errors=[],seen=new Set(),map=new Map(rooms.map(r=>[r.id,r]));
@@ -109,12 +132,10 @@ export async function allocate(allStudents,allRooms,glpk,options={}){
  if(errors.length)return {complete:false,assignments:{},unassigned:students.map(s=>({key:s.key,reason:errors.join('; ')})),errors};
  const solve=async partial=>{
   const model=buildModel(students,rooms,glpk,{...options,partial});
-  const solved=await glpk.solve(model.lp,{msglev:glpk.GLP_MSG_OFF,presol:true,tmlim:options.timeLimit??20,mipgap:0});
-  return {model,solved:solved.result||solved};
+  return {model,...await solvePriorities(model,glpk,options.timeLimit??20)};
  };
- let {model,solved}=await solve(false),fullFeasible=[glpk.GLP_OPT,glpk.GLP_FEAS].includes(solved.status);
- let timedOut=solved.status!==glpk.GLP_OPT&&solved.status!==glpk.GLP_NOFEAS;
- if(!fullFeasible){({model,solved}=await solve(true));}
+ let {model,solved,optimal,timedOut}=await solve(false),fullFeasible=[glpk.GLP_OPT,glpk.GLP_FEAS].includes(solved.status);
+ if(!fullFeasible){const partial=await solve(true);({model,solved,optimal}=partial);timedOut||=partial.timedOut;}
  const assignments={},cursors=new Map();
  if([glpk.GLP_OPT,glpk.GLP_FEAS].includes(solved.status))for(const v of model.variables){
   const amount=Math.round(solved.vars[v.name]||0);if(!amount)continue;
@@ -123,7 +144,7 @@ export async function allocate(allStudents,allRooms,glpk,options={}){
  const checked=audit(students,rooms,assignments,options);
  if(checked.errors.length)throw new Error(`בדיקת תקינות פנימית נכשלה: ${checked.errors.join('; ')}`);
  const unassigned=checked.missing.map(s=>({key:s.key,reason:diagnose(s,students,rooms,{...options,timedOut})}));
- return {assignments,complete:unassigned.length===0,unassigned,errors:unassigned.length?['לא נמצא שיבוץ מלא. התוצאה המוצגת היא הצעת שיבוץ חלקית בלבד',...(options.directives?.length?['הנחיות השיבוץ המיוחדות נשמרו גם בהצעה החלקית. יש לבדוק את מספר הנבחנים בכל כיתה ואת זמינות החדרים, או לערוך הנחיה ולחשב מחדש']:[])]:[],optimal:solved.status===glpk.GLP_OPT,timedOut,stats:{assigned:students.length-unassigned.length,unassigned:unassigned.length,atHome:students.filter(s=>Object.entries(assignments).some(([id,keys])=>keys.includes(s.key)&&rooms.find(r=>r.id===id).grade===s.grade&&rooms.find(r=>r.id===id).classroom===s.classroom)).length}};
+ return {assignments,complete:unassigned.length===0,unassigned,errors:unassigned.length?['לא נמצא שיבוץ מלא. התוצאה המוצגת היא הצעת שיבוץ חלקית בלבד',...(options.directives?.length?['הנחיות השיבוץ המיוחדות נשמרו גם בהצעה החלקית. יש לבדוק את מספר הנבחנים בכל כיתה ואת זמינות החדרים, או לערוך הנחיה ולחשב מחדש']:[])]:[],optimal,timedOut,stats:{assigned:students.length-unassigned.length,unassigned:unassigned.length,atHome:students.filter(s=>Object.entries(assignments).some(([id,keys])=>keys.includes(s.key)&&rooms.find(r=>r.id===id).grade===s.grade&&rooms.find(r=>r.id===id).classroom===s.classroom)).length}};
 }
 export function diagnose(s,students,rooms,{timedOut=false,directives=[],allowMixedGrades=false}={}){
  const e=effective(s),eligibleRooms=rooms.filter(r=>eligible(s,r,{allowMixedGrades,directives}));
