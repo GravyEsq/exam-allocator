@@ -28,15 +28,16 @@ export function placeManually(result,students,rooms,key,roomId,options={},note='
  const active=students.filter(s=>s.active);assertIntegrity(active,rooms,result.assignments);
  const student=active.find(s=>s.key===key),room=rooms.find(r=>r.id===roomId),old=(result.manualPlacements||[]).find(m=>m.key===key);
  if(!student||!room)throw new Error('יש לבחור נבחן פעיל וחדר קיים');
- if(!old&&!(result.unassigned||[]).some(u=>u.key===key))throw new Error('התלמיד כבר משובץ; לא ייווצר שיבוץ כפול');
+ const previousRoomId=Object.entries(result.assignments).find(([,keys])=>keys.includes(key))?.[0]||null;
  const assignments=Object.fromEntries(Object.entries(result.assignments).map(([id,keys])=>[id,keys.filter(k=>k!==key)]));
  (assignments[roomId]??=[]).push(key);
- const record={key,roomId,note:String(note).trim(),originalReason:old?.originalReason||result.unassigned.find(u=>u.key===key)?.reason||'החלטה ידנית'};
+ const record={key,roomId,note:String(note).trim(),originalRoomId:old?old.originalRoomId??null:previousRoomId,originalReason:old?.originalReason||result.unassigned?.find(u=>u.key===key)?.reason||'שינוי ידני של השיבוץ האוטומטי'};
  return review({...result,assignments,manualPlacements:[...(result.manualPlacements||[]).filter(m=>m.key!==key),record]},students,rooms,options);
 }
 export function undoManualPlacement(result,students,rooms,key,options={}){
  const record=result.manualPlacements?.find(m=>m.key===key);if(!record)throw new Error('לא נמצא שיבוץ ידני לתלמיד');
  const assignments=Object.fromEntries(Object.entries(result.assignments).map(([id,keys])=>[id,keys.filter(k=>k!==key)]));
+ if(record.originalRoomId&&rooms.some(r=>r.id===record.originalRoomId))(assignments[record.originalRoomId]??=[]).push(key);
  return review({...result,assignments,manualPlacements:result.manualPlacements.filter(m=>m.key!==key),unassigned:[...(result.unassigned||[]),{key,reason:record.originalReason}]},students,rooms,options);
 }
 export function reapplyManualPlacements(result,records,students,rooms,options={}){

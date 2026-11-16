@@ -17,6 +17,19 @@ const regular=(id,classroom=1,capacity=38)=>({id,name:id,type:'regular',enabled:
 const pair={type:'pair',classes:['11:1','11:2']},isolate={type:'isolate',classes:['11:1']};
 function uniqueIds(ss){ss.forEach((s,i)=>s.id=String(900000000+i));return ss;}
 
+test('14 and 30 paired pupils split into 7 and 15 from each class in each original room',async()=>{
+ const ss=[...make(14),...make(30,{classroom:2})],rooms=[regular('a'),regular('b',2)],r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);
+ for(const id of ['a','b']){assert.equal(r.assignments[id].length,22);assert.equal(r.assignments[id].filter(k=>ss.find(s=>s.key===k).classroom===1).length,7);assert.equal(r.assignments[id].filter(k=>ss.find(s=>s.key===k).classroom===2).length,15);}
+});
+test('without mixing keeps time and no-time classmates together while computer pupils share a lab',async()=>{
+ const ss=uniqueIds([...make(12),...make(12,{time:25}),...make(4,{typing:true}),...make(4,{classroom:2,reading:true,time:25}),...make(8,{classroom:2})]),rooms=[regular('a'),regular('b',2),regular('spare',3),pc('pc',8,8)],r=await allocate(ss,rooms,glpk,{directives:[isolate]});
+ assert.equal(r.complete,true);assert.equal(r.assignments.a.length,24);assert.ok(r.assignments.a.every(k=>ss.find(s=>s.key===k).classroom===1));assert.equal(r.assignments.a.filter(k=>!!effective(ss.find(s=>s.key===k)).time).length,12);assert.equal(r.assignments.pc.length,8);assert.equal(new Set(r.assignments.pc.map(k=>ss.find(s=>s.key===k).classroom)).size,2);assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[isolate]}).errors,[]);
+ assert.equal(eligible(ss[0],rooms[3],{directives:[isolate]}),false);
+});
+test('any automatically assigned pupil can move repeatedly and undo returns the pupil to the original room',async()=>{
+ const ss=make(8),rooms=[regular('a'),regular('b',2),regular('c',3)],base=await allocate(ss,rooms,glpk),key=ss[0].key,original=Object.keys(base.assignments).find(id=>base.assignments[id].includes(key));let r=placeManually(base,ss,rooms,key,'b');r=placeManually(r,ss,rooms,key,'c');assert.equal(Object.values(r.assignments).flat().filter(k=>k===key).length,1);assert.equal(r.manualPlacements[0].originalRoomId,original);r=undoManualPlacement(r,ss,rooms,key);assert.equal(r.complete,true);assert.ok(r.assignments[original].includes(key));assert.equal(r.manualPlacements.length,0);assert.equal(r.stats.assigned,8);
+});
+
 test('ordinary rooms avoid a full-versus-half-empty split even when pupils could all remain at home',async()=>{
  for(const time of [0,25]){
   const ss=[...make(38),...make(19,{classroom:2,time})],rooms=[regular('a'),regular('b',2)],r=await allocate(ss,rooms,glpk);
@@ -59,7 +72,7 @@ test('manual placement bypasses computer, small-class, disabled and closed-room 
 test('manual decisions may override pairing, isolation and cross-grade separation',async()=>{
  const ss=[...make(4),...make(4,{classroom:2})],rooms=[regular('a',1,2),regular('b',2,2),{...regular('other',3),grade:10}],options={directives:[pair]};let r=await allocate(ss,rooms,glpk,options);
  r=placeManually(r,ss,rooms,ss[0].key,'other',options);assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('חדרי האם')));assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('חדר לא מתאים')));
- const mix=[...make(4,{typing:true}),...make(4,{classroom:2,typing:true})],pcRooms=[pc('pc',8,8)],isolation={directives:[isolate]};let isolated=await allocate(mix,pcRooms,glpk,isolation);for(const u of [...isolated.unassigned])isolated=placeManually(isolated,mix,pcRooms,u.key,'pc',isolation);assert.equal(isolated.complete,true);assert.ok(isolated.overrideWarnings[0].messages.some(s=>s.includes('ללא ערבוב')));
+ const mix=[...make(8),...make(8,{classroom:2})],pcRooms=[regular('pc',1,8)],isolation={directives:[isolate]};let isolated=await allocate(mix,pcRooms,glpk,isolation);for(const u of [...isolated.unassigned])isolated=placeManually(isolated,mix,pcRooms,u.key,'pc',isolation);assert.equal(isolated.complete,true);assert.ok(isolated.overrideWarnings[0].messages.some(s=>s.includes('ללא ערבוב')));
 });
 test('manual allocation never introduces duplicates, unknown pupils, inactive pupils or unknown rooms',async()=>{
  const ss=make(3),rooms=[regular('a')],base=await allocate(ss,rooms,glpk);
@@ -67,7 +80,7 @@ test('manual allocation never introduces duplicates, unknown pupils, inactive pu
  const inactive=structuredClone(ss);inactive[0].active=false;assert.throws(()=>placeManually(base,inactive,rooms,ss[0].key,'a'),/נבחן פעיל/);
  const first=placeManually(base,ss,rooms,ss[0].key,'a'),again=placeManually(first,ss,rooms,ss[0].key,'a');assert.equal(again.assignments.a.length,1);assert.equal(again.manualPlacements.length,1);
  const corrupt={...first,assignments:{a:[ss[0].key,ss[0].key]}};assert.throws(()=>placeManually(corrupt,ss,rooms,ss[1].key,'a'),/יותר מחדר אחד/);
- const assigned=await allocate(make(4),rooms,glpk);assert.throws(()=>placeManually(assigned,make(4),rooms,make(4)[0].key,'a'),/כבר משובץ/);
+ const assigned=await allocate(make(4),rooms,glpk),edited=placeManually(assigned,make(4),rooms,make(4)[0].key,'a');assert.equal(edited.assignments.a.length,4);assert.equal(edited.manualPlacements[0].originalRoomId,'a');
 });
 test('manual choices survive recalculation and can be moved without leaving a duplicate in the automatic room',async()=>{
  const ss=make(3),rooms=[regular('a'),regular('b',2)],partial=await allocate(ss,rooms,glpk),manual=placeManually(partial,ss,rooms,ss[0].key,'b',{},'הערה');
@@ -83,21 +96,20 @@ test('manual overflow prints all pupils on numbered pages and exports the decisi
  const csv=assignmentCSV(ss,rooms,r);assert.ok(csv.includes('אופן השיבוץ'));assert.ok(csv.includes('ידני'));assert.ok(csv.includes("'=1+1"));assert.equal(csv.split('\r\n').length,41);
 });
 
-test('paired classes share their home rooms without outsiders or per-class quotas',async()=>{
+test('paired classes put half of each home class in each original room without outsiders',async()=>{
  const ss=[...make(20),...make(20,{classroom:2}),...make(4,{classroom:3})],rooms=[regular('a',1,28),regular('b',2,28),regular('c',3,10)];
  const r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);
- for(const keys of Object.values(r.assignments)){const members=keys.map(k=>ss.find(s=>s.key===k));if(!members.some(s=>pairParticipant(s,pair)))continue;const a=members.filter(s=>s.classroom===1).length,b=members.filter(s=>s.classroom===2).length;assert.equal(a+b,members.length);assert.ok(a+b>0);}
+ for(const keys of Object.values(r.assignments)){const members=keys.map(k=>ss.find(s=>s.key===k));if(!members.some(s=>pairParticipant(s,pair)))continue;const a=members.filter(s=>s.classroom===1).length,b=members.filter(s=>s.classroom===2).length;assert.equal(a+b,members.length);assert.equal(a,10);assert.equal(b,10);}
  assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[pair]}),{errors:[],missing:[]});
 });
-test('paired classes can share a single home room when it fits the entire group',async()=>{
- const ss=[...make(9,{time:25}),...make(8,{classroom:2})],rooms=[regular('a',1,18)];
- const r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);assert.equal(r.assignments.a.length,17);
+test('odd-sized paired classes keep the extra pupil at home and require both home rooms',async()=>{
+ const ss=[...make(9,{time:25}),...make(8,{classroom:2})],rooms=[regular('a',1,18),regular('b',2,18)],options={directives:[pair]},r=await allocate(ss,rooms,glpk,options);
+ assert.equal(r.complete,true);assert.equal(r.assignments.a.length,9);assert.equal(r.assignments.b.length,8);assert.equal(r.assignments.a.filter(k=>ss.find(s=>s.key===k).classroom===1).length,5);assert.equal(r.assignments.b.filter(k=>ss.find(s=>s.key===k).classroom===1).length,4);
+ const missing=await allocate(ss,rooms.slice(0,1),glpk,options);assert.equal(missing.complete,false);assert.equal(missing.unassigned.length,8);
 });
-test('computer and small-class pupils are exempt from pairing without changing their entitlements',async()=>{
+test('computer and small-class pupils are exempt from the two halves without changing their entitlements',async()=>{
  const ss=uniqueIds([...make(8),...make(8,{classroom:2}),...make(1,{typing:true}),...make(1,{classroom:2,typing:true}),...make(1,{small:true,time:25})]);
- const rooms=[regular('pair',1,16),{...regular('small',3,15),smallOnly:true},pc('pc',2,2)];
- const r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);assert.equal(r.assignments.pair.length,16);assert.equal(r.assignments.pc.length,2);assert.equal(r.assignments.small.length,1);
- assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[pair]}).errors,[]);
+ const rooms=[regular('a',1,8),regular('b',2,8),{...regular('small',3,15),smallOnly:true},pc('pc',2,2)],r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);assert.equal(r.assignments.a.length,8);assert.equal(r.assignments.b.length,8);assert.equal(r.assignments.pc.length,2);assert.equal(r.assignments.small.length,1);assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[pair]}).errors,[]);
 });
 test('isolation may split a class among ordinary rooms but never mixes it with outsiders',async()=>{
  const ss=[...make(20),...make(12,{classroom:2})],rooms=[regular('a',1,16),regular('b',2,16),regular('c',3,16)];
@@ -105,15 +117,12 @@ test('isolation may split a class among ordinary rooms but never mixes it with o
  for(const keys of Object.values(r.assignments)){const members=keys.map(k=>ss.find(s=>s.key===k));if(members.some(s=>s.classroom===1)){exclusiveRooms++;assert.ok(members.every(s=>s.classroom===1));}}
  assert.equal(exclusiveRooms,2);
 });
-test('isolation applies to computer rooms even when opening one room would be cheaper',async()=>{
- const ss=[...make(4,{typing:true}),...make(4,{classroom:2,typing:true})],rooms=[pc('a',8,8),pc('b',8,8)];
- const r=await allocate(ss,rooms,glpk,{directives:[isolate]});assert.equal(r.complete,true);assert.equal(Object.keys(r.assignments).length,2);
- for(const keys of Object.values(r.assignments))assert.equal(new Set(keys.map(k=>classKey(ss.find(s=>s.key===k)))).size,1);
- const impossible=await allocate(ss,rooms.slice(0,1),glpk,{directives:[isolate]});assert.equal(impossible.complete,false);assert.equal(impossible.unassigned.length,4);assert.deepEqual(audit(ss,rooms,impossible.assignments,{directives:[isolate]}).errors,[]);
+test('isolated classes share computer rooms with other classes and do not open an unnecessary lab',async()=>{
+ const ss=[...make(4,{typing:true}),...make(4,{classroom:2,typing:true})],rooms=[pc('a',8,8),pc('b',8,8)],r=await allocate(ss,rooms,glpk,{directives:[isolate]});assert.equal(r.complete,true);assert.equal(Object.keys(r.assignments).length,1);assert.equal(Object.values(r.assignments)[0].length,8);assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[isolate]}).errors,[]);
 });
-test('unequal class sizes in a pair do not force pupils to remain unassigned',async()=>{
- const ss=[...make(12),...make(4,{classroom:2})],rooms=[regular('a',1,16)],r=await allocate(ss,rooms,glpk,{directives:[pair]});
- assert.equal(r.complete,true);assert.equal(r.assignments.a.length,16);assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[pair]}).errors,[]);
+test('unequal class sizes split each class separately rather than demanding equal class shares',async()=>{
+ const ss=[...make(12),...make(4,{classroom:2,time:25})],rooms=[regular('a',1,8),regular('b',2,8)],r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);
+ for(const keys of Object.values(r.assignments)){assert.equal(keys.filter(k=>ss.find(s=>s.key===k).classroom===1).length,6);assert.equal(keys.filter(k=>ss.find(s=>s.key===k).classroom===2).length,2);}assert.deepEqual(audit(ss,rooms,r.assignments,{directives:[pair]}).errors,[]);
 });
 test('pairing cannot escape into computer rooms and preserves the social minimum',async()=>{
  const ss=[...make(8),...make(8,{classroom:2})];
@@ -137,20 +146,19 @@ test('cross-grade pairing uses ordinary rooms of both participating grades in jo
  const mixed={ten:[...ss.slice(0,16),...ss.slice(20,24)].map(s=>s.key),eleven:[...ss.slice(16,20),...ss.slice(24)].map(s=>s.key)};assert.ok(audit(ss,rooms,mixed,{directives:[d]}).errors.some(s=>s.includes('ערבוב שכבות')));
  for(const type of ['students','supervisor']){const html=reportHTML(type,ss,rooms,r);for(const grade of [10,11])assert.ok(html.includes(ss.find(s=>s.grade===grade).name));}
 });
-test('cross-grade pairing does not open unrelated grades or closed rooms, or bypass accommodations',async()=>{
- const ss=uniqueIds([...make(4,{grade:10}),...make(4,{classroom:2}),...make(1,{grade:10,typing:true}),...make(1,{classroom:2,typing:true}),...make(1,{classroom:2,small:true,time:25}),...make(4,{grade:12,classroom:3})]);
- const d={type:'pair',classes:['10:1','11:2']},options={allowMixedGrades:true,directives:[d]},ten={...regular('ten',1,8),grade:10},twelve={...regular('twelve',3),grade:12},rooms=[ten,{...regular('small',2,15),smallOnly:true},pc('pc',2,2),twelve];
- assert.equal(eligible(ss[0],ten,options),true);assert.equal(eligible(ss[4],ten,options),true);assert.equal(eligible(ss[4],twelve,options),false);assert.equal(eligible(ss[10],ten,options),false);assert.equal(eligible(ss[11],ten,options),false);assert.equal(eligible(ss[8],ten,options),false);assert.equal(eligible(ss[4],{...ten,type:'fixed',classroom:7},options),false);
- const r=await allocate(ss,rooms,glpk,options);assert.equal(r.complete,true);assert.equal(r.assignments.ten.length,8);assert.equal(r.assignments.pc.length,2);assert.equal(r.assignments.small.length,1);assert.equal(r.assignments.twelve.length,4);assert.deepEqual(audit(ss,rooms,r.assignments,options).errors,[]);
- const wrongGrade=await allocate(ss.slice(0,8),[twelve],glpk,options);assert.equal(wrongGrade.complete,false);assert.equal(wrongGrade.unassigned.length,8);
+test('cross-grade halves use the two home rooms without bypassing computer or small-class needs',async()=>{
+ const ss=uniqueIds([...make(8,{grade:10}),...make(8,{classroom:2}),...make(1,{grade:10,typing:true}),...make(1,{classroom:2,typing:true}),...make(1,{classroom:2,small:true,time:25}),...make(4,{grade:12,classroom:3})]);
+ const d={type:'pair',classes:['10:1','11:2']},options={allowMixedGrades:true,directives:[d]},ten={...regular('ten',1,8),grade:10},eleven=regular('eleven',2,8),twelve={...regular('twelve',3),grade:12},rooms=[ten,eleven,{...regular('small',4,15),smallOnly:true},pc('pc',2,2),twelve];
+ const normal=ss.find(s=>s.grade===11&&!effective(s).computer&&!effective(s).small),small=ss.find(s=>effective(s).small),computer=ss.find(s=>effective(s).computer),other=ss.find(s=>s.grade===12);assert.equal(eligible(normal,ten,options),true);for(const s of [small,computer,other])assert.equal(eligible(s,ten,options),false);assert.equal(eligible(normal,twelve,options),false);assert.equal(eligible(normal,{...ten,type:'fixed',classroom:7},options),false);
+ const r=await allocate(ss,rooms,glpk,options);assert.equal(r.complete,true);for(const id of ['ten','eleven']){assert.equal(r.assignments[id].length,8);assert.equal(r.assignments[id].filter(k=>ss.find(s=>s.key===k).grade===10).length,4);}assert.equal(r.assignments.pc.length,2);assert.equal(r.assignments.small.length,1);assert.equal(r.assignments.twelve.length,4);assert.deepEqual(audit(ss,rooms,r.assignments,options).errors,[]);
+ const wrongGrade=await allocate(ss.slice(0,16),[twelve],glpk,options);assert.equal(wrongGrade.complete,false);assert.equal(wrongGrade.unassigned.length,16);
  for(const grade of [10,11])assert.ok(validateDirectives([{type:'pair',classes:[`${grade}:7`,'11:2']}],[...make(4,{grade,classroom:7}),...make(4,{classroom:2})],options).some(s=>s.includes('סגורה')));
 });
-test('independent audit allows unequal class shares but detects outsiders, wrong rooms and isolation violations',()=>{
- const ss=[...make(8),...make(4,{classroom:2}),...make(4,{classroom:3})],rooms=[regular('a'),pc('pc')];
- assert.deepEqual(audit(ss,rooms,{a:ss.slice(0,12).map(s=>s.key)},{directives:[pair]}).errors,[]);assert.ok(audit(ss,rooms,{a:[...ss.slice(0,4),...ss.slice(8)].map(s=>s.key)},{directives:[pair]}).errors.some(s=>s.includes('צימוד')));
- assert.ok(audit(ss,rooms,{pc:[...ss.slice(0,4),...ss.slice(8,12)].map(s=>s.key)},{directives:[pair]}).errors.some(s=>s.includes('צימוד')));
- assert.ok(audit(ss,rooms,{a:[...ss.slice(0,4),...ss.slice(8,12)].map(s=>s.key)},{directives:[isolate]}).errors.some(s=>s.includes('ללא ערבוב')));
+test('independent audit detects an incorrect half, outsiders, wrong rooms and ordinary isolation violations',()=>{
+ const ss=[...make(8),...make(8,{classroom:2}),...make(4,{classroom:3})],rooms=[regular('a'),regular('b',2),pc('pc')],half=[...ss.slice(0,4),...ss.slice(8,12)].map(s=>s.key);
+ assert.deepEqual(audit(ss,rooms,{a:half},{directives:[pair]}).errors,[]);assert.ok(audit(ss,rooms,{a:ss.slice(0,16).map(s=>s.key)},{directives:[pair]}).errors.some(s=>s.includes('לחצאים')));assert.ok(audit(ss,rooms,{a:[...ss.slice(0,4),...ss.slice(16)].map(s=>s.key)},{directives:[pair]}).errors.some(s=>s.includes('צימוד')));assert.ok(audit(ss,rooms,{pc:half},{directives:[pair]}).errors.some(s=>s.includes('צימוד')));assert.ok(audit(ss,rooms,{a:half},{directives:[isolate]}).errors.some(s=>s.includes('ללא ערבוב')));
 });
+
 test('normalizes headers, Hebrew quotes, whitespace and niqqud without losing word boundaries',()=>{assert.equal(headerKey(' ת.ז\n'),'תז');assert.equal(headerKey('הקלדה – אנגלית'),'הקלדהאנגלית');assert.equal(gradeOf('י״א'),11);assert.equal(clean('שָׁלוֹם־דָּן'),'שלום-דן');});
 test('finds headers after title rows and handles reordered/extra columns',()=>{const {students,headerRow}=parseRows([['כותרת'],[],['כיתה','שם התלמיד','חדש','שכבה','ת.ז','תוספת זמן - 25%'],[2,'פיקטיבי ישראלי','X','יא','001234567','X']]);assert.equal(headerRow,3);assert.equal(students[0].id,'001234567');assert.equal(effective(students[0]).time,25);assert.equal(students[0].issues.length,1);assert.equal(dataProblems(students).length,1);});
 test('missing and duplicate identifying columns are rejected',()=>{assert.throws(()=>parseRows([['שם התלמיד'],['שם']]),/כותרות/);assert.throws(()=>parseRows([['ת.ז','ת.ז','שם התלמיד','שכבה','כיתה']]),/כפולה/);});

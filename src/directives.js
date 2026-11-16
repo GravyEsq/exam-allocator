@@ -6,6 +6,9 @@ export const classFromKey=key=>{const [grade,classroom]=String(key).split(':').m
 export const className=key=>classLabel(classFromKey(key));
 export const pairParticipant=(s,d)=>d.type==='pair'&&d.classes.includes(classKey(s))&&!effective(s).computer&&!effective(s).small;
 export const pairRoom=(r,d)=>r.type==='regular'&&!r.smallOnly&&d.classes.includes(classKey(r));
+export const isolationParticipant=(s,d)=>d.type==='isolate'&&classKey(s)===d.classes[0]&&!effective(s).computer;
+export function pairPlan(students,d){return d.classes.map(key=>{const total=students.filter(s=>s.active&&classKey(s)===key&&pairParticipant(s,d)).length;return {key,total,stay:Math.ceil(total/2),exchange:Math.floor(total/2)};});}
+export function pairQuota(students,d,key,room){const plan=pairPlan(students,d).find(p=>p.key===key);return classKey(room)===key?plan.stay:plan.exchange;}
 export function directiveLabel(d){return d.type==='pair'?`צימוד כיתות: ${d.classes.map(className).join(' + ')}`:`ללא ערבוב: ${className(d.classes[0])}`;}
 export function validateDirectives(directives,students,{allowMixedGrades=false}={}){
  const errors=[],available=new Set(students.filter(s=>s.active).map(classKey)),used=new Set();
@@ -26,14 +29,15 @@ export function validateDirectives(directives,students,{allowMixedGrades=false}=
  }
  return [...new Set(errors)];
 }
-export function auditDirectives(members,room,directives){
+export function auditDirectives(members,room,directives,students){
  const errors=[];
  for(const d of directives){
   if(d.type==='isolate'){
-   if(members.some(s=>classKey(s)===d.classes[0])&&members.some(s=>classKey(s)!==d.classes[0]))errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}`);
+   if(members.some(s=>isolationParticipant(s,d))&&members.some(s=>classKey(s)!==d.classes[0]))errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; החריג לחדרי מחשבים חל רק על תלמידים הזקוקים למחשב`);
   }else{
    const paired=members.filter(s=>pairParticipant(s,d));if(!paired.length)continue;
    if(!pairRoom(room,d)||paired.length!==members.length)errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; הצימוד משתמש רק בחדרי האם של שתי הכיתות וללא תלמידים מכיתות אחרות`);
+   else for(const key of d.classes){const count=paired.filter(s=>classKey(s)===key).length,target=pairQuota(students,d,key,room);if(count>target)errors.push(`${room.name}: החלוקה לחצאים של ${className(key)} מאפשרת ${target} תלמידים בחדר זה, אך שובצו ${count}`);}
   }
  }
  return errors;
