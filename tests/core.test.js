@@ -6,7 +6,7 @@ import {parseRows,dataProblems,refreshImportedRules} from '../src/importer.js';
 import {interpretCell,effective,accommodationText} from '../src/rules.js';
 import {candidates,matchLines} from '../src/matching.js';
 import {defaultRooms,ensureGrade11Class7Room} from '../src/rooms.js';
-import {allocate,audit} from '../src/allocator.js';
+import {allocate,audit,eligible} from '../src/allocator.js';
 import {classKey,pairParticipant,validateDirectives} from '../src/directives.js';
 import {reportHTML,assignmentCSV} from '../src/reports.js';
 const require=createRequire(import.meta.url),glpk=require('../vendor/glpk-node.cjs')();
@@ -54,12 +54,30 @@ test('pairing cannot escape into computer rooms and preserves the social minimum
  const pcOnly=await allocate(ss,[pc('pc')],glpk,{directives:[pair]});assert.equal(pcOnly.complete,false);assert.equal(pcOnly.unassigned.length,16);
  const tiny=[...make(3),...make(3,{classroom:2})],social=await allocate(tiny,[regular('a')],glpk,{directives:[pair]});assert.equal(social.complete,false);assert.equal(social.unassigned.length,6);
 });
-test('overlapping, duplicate, cross-grade, closed-class and absent-class directives are rejected before solving',async()=>{
+test('overlapping, duplicate, separate-mode cross-grade, closed-class and absent-class directives are rejected before solving',async()=>{
  const ss=[...make(4),...make(4,{classroom:2}),...make(4,{classroom:3}),...make(4,{grade:10}),...make(1,{classroom:7})];
  for(const directives of [[pair,isolate],[{type:'pair',classes:['11:1','11:1']}],[{type:'pair',classes:['11:1','10:1']}],[{type:'isolate',classes:['11:7']}],[{type:'isolate',classes:['11:6']}],[{type:'bad',classes:[]}]]){
   assert.ok(validateDirectives(directives,ss).length);const r=await allocate(ss,defaultRooms([10,11]),glpk,{directives});assert.equal(r.complete,false);assert.deepEqual(r.assignments,{});assert.equal(r.unassigned.length,ss.length);
  }
  const exempt=make(1,{typing:true});assert.ok(validateDirectives([pair],[...exempt,...make(4,{classroom:2})]).some(s=>s.includes('אין תלמידים')));
+});
+test('cross-grade pairing uses ordinary rooms of both participating grades in joint mode',async()=>{
+ const ss=[...make(20,{grade:10}),...make(20,{classroom:2})],d={type:'pair',classes:['10:1','11:2']},options={allowMixedGrades:true,directives:[d]},rooms=[{...regular('ten',1,24),grade:10},regular('eleven',2,24)];
+ assert.deepEqual(validateDirectives([d],ss,options),[]);
+ const r=await allocate(ss,rooms,glpk,options);assert.equal(r.complete,true);assert.equal(Object.keys(r.assignments).length,2);
+ for(const keys of Object.values(r.assignments)){const members=keys.map(k=>ss.find(s=>s.key===k)),a=members.filter(s=>s.grade===10).length,b=members.filter(s=>s.grade===11).length;assert.ok(a>=4&&b>=4&&Math.abs(a-b)<=1);assert.ok(members.length<=24);}
+ assert.deepEqual(audit(ss,rooms,r.assignments,options),{errors:[],missing:[]});
+ const separate=await allocate(ss,rooms,glpk,{directives:[d]});assert.equal(separate.complete,false);assert.match(separate.errors.join(' '),/שיבוץ משותף/);assert.deepEqual(separate.assignments,{});
+ assert.ok(audit(ss,rooms,r.assignments,{directives:[d]}).errors.some(s=>s.includes('ערבוב שכבות')));
+ for(const [grade,other]of [[10,11],[11,10]])for(const type of ['students','supervisor']){const html=reportHTML(type,grade,ss,rooms,r);assert.ok(html.includes(ss.find(s=>s.grade===grade).name));assert.ok(!html.includes(ss.find(s=>s.grade===other).name));}
+});
+test('cross-grade pairing does not open unrelated grades or closed rooms, or bypass accommodations',async()=>{
+ const ss=uniqueIds([...make(4,{grade:10}),...make(4,{classroom:2}),...make(1,{grade:10,typing:true}),...make(1,{classroom:2,typing:true}),...make(1,{classroom:2,small:true,time:25}),...make(4,{grade:12,classroom:3})]);
+ const d={type:'pair',classes:['10:1','11:2']},options={allowMixedGrades:true,directives:[d]},ten={...regular('ten',1,8),grade:10},twelve={...regular('twelve',3),grade:12},rooms=[ten,{...regular('small',2,15),smallOnly:true},pc('pc',2,2),twelve];
+ assert.equal(eligible(ss[0],ten,options),true);assert.equal(eligible(ss[4],ten,options),true);assert.equal(eligible(ss[4],twelve,options),false);assert.equal(eligible(ss[10],ten,options),false);assert.equal(eligible(ss[11],ten,options),false);assert.equal(eligible(ss[8],ten,options),false);assert.equal(eligible(ss[4],{...ten,type:'fixed',classroom:7},options),false);
+ const r=await allocate(ss,rooms,glpk,options);assert.equal(r.complete,true);assert.equal(r.assignments.ten.length,8);assert.equal(r.assignments.pc.length,2);assert.equal(r.assignments.small.length,1);assert.equal(r.assignments.twelve.length,4);assert.deepEqual(audit(ss,rooms,r.assignments,options).errors,[]);
+ const wrongGrade=await allocate(ss.slice(0,8),[twelve],glpk,options);assert.equal(wrongGrade.complete,false);assert.equal(wrongGrade.unassigned.length,8);
+ for(const grade of [10,11])assert.ok(validateDirectives([{type:'pair',classes:[`${grade}:7`,'11:2']}],[...make(4,{grade,classroom:7}),...make(4,{classroom:2})],options).some(s=>s.includes('סגורה')));
 });
 test('independent audit detects imbalance, outsiders, unsuitable pair rooms and isolation violations',()=>{
  const ss=[...make(8),...make(4,{classroom:2}),...make(4,{classroom:3})],rooms=[regular('a'),pc('pc')];

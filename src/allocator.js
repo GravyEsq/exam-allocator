@@ -1,15 +1,16 @@
 import {effective} from './rules.js';
 import {classLabel,validateStudent} from './normalize.js';
 import {validateRooms} from './rooms.js';
-import {classKey,pairParticipant,validateDirectives,auditDirectives,directiveLabel} from './directives.js';
+import {classKey,classFromKey,pairParticipant,validateDirectives,auditDirectives,directiveLabel} from './directives.js';
 
-export function eligible(s,r){
+export function eligible(s,r,{allowMixedGrades=false,directives=[]}={}){
  const e=effective(s);
  if(e.fixed)return r.type==='fixed'&&r.grade===10&&r.classroom===7&&r.computer;
  if(s.grade===11&&s.classroom===7)return r.type==='closed'&&r.grade===11&&r.classroom===7&&(!e.computer||r.computer);
  if(r.type==='fixed'||r.type==='closed')return false;
  if(s.classroom===7)return false; // Other grade-7 policies require explicit school instructions.
- return (r.type==='computer'||r.grade===s.grade) && (!e.computer||r.computer);
+ const pairedRoom=allowMixedGrades&&r.type==='regular'&&directives.some(d=>pairParticipant(s,d)&&d.classes.some(key=>classFromKey(key).grade===r.grade));
+ return (r.type==='computer'||r.grade===s.grade||pairedRoom) && (!e.computer||r.computer);
 }
 function groupStudents(students){
  const map=new Map();for(const s of students){const e=effective(s),k=[s.grade,s.classroom,e.computer,e.small,!!e.time].join(':');if(!map.has(k))map.set(k,{key:k,students:[],grade:s.grade,classroom:s.classroom,computer:e.computer,small:e.small,time:!!e.time});map.get(k).students.push(s);}return [...map.values()];
@@ -23,7 +24,7 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
  const n=students.length, moveCost=20, mixCost=1000*(n+1), computerOpenCost=10000*(n+1);
  for(let g=0;g<groups.length;g++){
   const group=groups[g],vars=[];
-  for(let r=0;r<rooms.length;r++)if(eligible(group.students[0],rooms[r])&&(!directives.some(d=>pairParticipant(group.students[0],d))||(rooms[r].type==='regular'&&!rooms[r].smallOnly))){
+  for(let r=0;r<rooms.length;r++)if(eligible(group.students[0],rooms[r],{allowMixedGrades,directives})&&(!directives.some(d=>pairParticipant(group.students[0],d))||(rooms[r].type==='regular'&&!rooms[r].smallOnly))){
    const name=`x${g}_${r}`;lp.generals.push(name);lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:group.students.length});vars.push(term(name));variables.push({name,g,r});
    const home=rooms[r].type==='regular'&&rooms[r].grade===group.grade&&rooms[r].classroom===group.classroom;
    cost(name,home?0:moveCost);
@@ -89,7 +90,7 @@ export function audit(students,rooms,assignments,{allowMixedGrades=false,directi
   if(members.some(s=>s&&effective(s).small)&&keys.length>r.smallCapacity)errors.push(`כיתה מצומצמת חורגת מקיבולתה בחדר ${r.name}`);
   if(r.smallOnly&&keys.length>r.smallCapacity)errors.push(`חריגה מקיבולת חדר מצומצם ${r.name}`);
   if(!allowMixedGrades&&new Set(members.filter(Boolean).map(s=>s.grade)).size>1)errors.push(`ערבוב שכבות בחדר ${r.name}`);
-  const social=new Map();for(const s of members){if(!s){errors.push('תלמיד לא מוכר');continue;}if(seen.has(s.key))errors.push(`תלמיד כפול: ${s.name}`);seen.add(s.key);if(!eligible(s,r))errors.push(`חדר לא מתאים: ${s.name}`);if(r.type==='regular'&&!effective(s).time){const key=classLabel(s);social.set(key,(social.get(key)||0)+1);}}
+  const social=new Map();for(const s of members){if(!s){errors.push('תלמיד לא מוכר');continue;}if(seen.has(s.key))errors.push(`תלמיד כפול: ${s.name}`);seen.add(s.key);if(!eligible(s,r,{allowMixedGrades,directives}))errors.push(`חדר לא מתאים: ${s.name}`);if(r.type==='regular'&&!effective(s).time){const key=classLabel(s);social.set(key,(social.get(key)||0)+1);}}
   for(const [key,count]of social)if(count<4)errors.push(`${r.name}: קבוצה של ${count} תלמידים ללא תוספת זמן מ־${key}`);
   errors.push(...auditDirectives(members.filter(Boolean),r,directives));
  }
@@ -97,7 +98,7 @@ export function audit(students,rooms,assignments,{allowMixedGrades=false,directi
 }
 export async function allocate(allStudents,allRooms,glpk,options={}){
  const students=allStudents.filter(s=>s.active),rooms=allRooms.filter(r=>r.enabled),errors=validateRooms(allRooms);
- errors.push(...validateDirectives(options.directives??[],students));
+ errors.push(...validateDirectives(options.directives??[],students,options));
  if(!students.length)errors.push('אין תלמידים פעילים לשיבוץ');
  for(const s of students){for(const problem of validateStudent(s))errors.push(`${s.name||s.key}: ${problem}`);if((s.issues||[]).some(i=>!i.resolution))errors.push(`${s.name}: יש תאים שממתינים להכרעה`);}
  if(students.some(s=>s.classroom===7&&![10,11].includes(s.grade)))errors.push('יש תלמידי כיתה 7 בשכבה שטרם הוגדרו לה כללים. י׳7 וי״א7 מוגדרות ככיתות סגורות; נדרשת הנחיה לשכבה הנוספת');
@@ -121,8 +122,8 @@ export async function allocate(allStudents,allRooms,glpk,options={}){
  const unassigned=checked.missing.map(s=>({key:s.key,reason:diagnose(s,students,rooms,{...options,timedOut})}));
  return {assignments,complete:unassigned.length===0,unassigned,errors:unassigned.length?['לא נמצא שיבוץ מלא. התוצאה המוצגת היא הצעת שיבוץ חלקית בלבד',...(options.directives?.length?['הנחיות השיבוץ המיוחדות נשמרו גם בהצעה החלקית. יש לבדוק את מספר הנבחנים בכל כיתה ואת זמינות החדרים, או לערוך הנחיה ולחשב מחדש']:[])]:[],optimal:solved.status===glpk.GLP_OPT,timedOut,stats:{assigned:students.length-unassigned.length,unassigned:unassigned.length,atHome:students.filter(s=>Object.entries(assignments).some(([id,keys])=>keys.includes(s.key)&&rooms.find(r=>r.id===id).grade===s.grade&&rooms.find(r=>r.id===id).classroom===s.classroom)).length}};
 }
-export function diagnose(s,students,rooms,{timedOut=false,directives=[]}={}){
- const e=effective(s),eligibleRooms=rooms.filter(r=>eligible(s,r));
+export function diagnose(s,students,rooms,{timedOut=false,directives=[],allowMixedGrades=false}={}){
+ const e=effective(s),eligibleRooms=rooms.filter(r=>eligible(s,r,{allowMixedGrades,directives}));
  if(s.grade===11&&s.classroom===7){
   const count=students.filter(t=>t.grade===11&&t.classroom===7).length,room=rooms.find(r=>r.type==='closed'&&r.grade===11&&r.classroom===7);
   if(!room)return 'יש לפתוח את חדר י״א7: הכיתה נבחנת כקבוצה סגורה ואינה מתפצלת לחדרים אחרים';
