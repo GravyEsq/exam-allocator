@@ -1,0 +1,8 @@
+node_modules/
+qa/
+*.xlsx
+*.txt
+!vendor/*
+!LICENSE.txt
+*.pdf
+*.json.bak
