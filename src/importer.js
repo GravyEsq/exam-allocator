@@ -18,7 +18,7 @@ export function parseRows(rows,sheet='גיליון'){
   const s={key:`${sheet}:${r+1}`,id:normalizedId(get('id')),name:get('name'),grade:g,classroom:c,active:true,manual:{accommodations:{}},differential:null,issues:[],original:{sheet,row:r+1,headers,cells:row.map(v=>String(v??'')),accommodations:[],excluded:[]}};
   for(let j=0;j<Math.max(headers.length,row.length);j++){
    const header=headers[j]||`עמודה ללא כותרת ${j+1}`,a=interpretCell(header,row[j],g);a.source={...a.source,sheet,row:r+1};
-   if(a.status==='granted')s.original.accommodations.push(a);
+   if(a.status==='granted'||a.status==='conditional')s.original.accommodations.push(a);
    if(a.status==='excluded')s.original.excluded.push(a);
    if(a.status==='review')s.issues.push({...a,originalKind:a.kind,originalAmount:a.amount,key:`${s.key}:${j}`,resolution:null});
   }

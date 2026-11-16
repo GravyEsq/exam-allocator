@@ -10,6 +10,7 @@ const identification={ 'תז':'id','שםהתלמיד':'name','שכבה':'grade',
 export function classifyHeader(header) {
   const k=headerKey(header), h=clean(header);
   if(identification[k]) return {kind:identification[k],scope:'identity'};
+  if(/מלווה/.test(k) && /שמע|שמיע/.test(k))return {kind:'excluded',scope:'other',reason:'מלווה ללקוי שמיעה אינו התאמה רלוונטית לבחינה בעברית/לשון'};
   if(/אנגלית|מתמטיקה|שאלוןe/i.test(k)) return {kind:'excluded',scope:'other',reason:'התאמה למקצוע אחר אינה מקנה זכאות בעברית'};
   if(/רבימלל/.test(k)) return {kind:'excluded',scope:'other',reason:'התאמה המוגבלת לרבי מלל אינה חלה בעברית'};
   if(/דלימלל/.test(k)) return {kind:'review',scope:'unclear',reason:'דלי מלל: נדרש מיפוי מפורש ומאושר'};
@@ -20,7 +21,7 @@ export function classifyHeader(header) {
   const explicit={'הקראהבעברית':'reading','הקראתשאלוןבעברית':'reading','הקלדהבעברית':'typing','מבחןמותאםבעברית':'adapted','מבחןמותאםבלשון':'adapted'};
   if(explicit[k])return {kind:explicit[k],scope:'hebrew'};
   const general={'הקלדה':'typing','הקראתשאלון':'reading','הקראה':'reading','הגדלתשאלון':'enlarged','הגדלה':'enlarged','כיתהמצומצמת':'small','התעלמותמשגיאותכתיב':'spelling'};
-  if(general[k])return {kind:general[k],scope:'general',needsApproval:['typing','reading'].includes(general[k])};
+  if(general[k])return {kind:general[k],scope:general[k]==='spelling'?'immigrant':'general',needsApproval:['typing','reading'].includes(general[k])};
   return {kind:'unknown',scope:'unclear',reason:'כותרת לא מוכרת; אין זכאות אוטומטית'};
 }
 export function interpretCell(header,raw,grade) {
@@ -40,7 +41,7 @@ export function interpretCell(header,raw,grade) {
   const note=value.replace(/^[xh]/i,'').trim();
   if(note && !/^\(\s*(?:עברית|לשון)\s*\)$/.test(note)) return outcome('review','יש הערה בתא: נדרשת הכרעה לאחר קריאת התוכן המלא');
   if(h.needsApproval)return outcome('review','סימון כללי בהקלדה או בהקראה מחייב אישור ידני לעברית');
-  if(h.kind==='spelling' && !/עברית|לשון/.test(value))return outcome('review','יש לאשר שהתעלמות משגיאות כתיב חלה בעברית');
+  if(h.kind==='spelling')return outcome('conditional','התאמה לעולים בלבד; הסימון יופעל רק לאחר סימון התלמיד כעולה',true);
   if(h.kind==='time' && !h.percent)return outcome('review','לא זוהה אחוז תוספת הזמן');
   return outcome('granted','זכאות מפורשת לעברית או התאמה כללית מאושרת',h.kind==='time'?h.percent:true);
 }
@@ -51,17 +52,18 @@ export function effective(s) {
   for(const issue of s.issues??[])if(issue.resolution==='grant' && ACCOMMODATIONS[issue.kind])add(issue.kind,issue.kind==='time'?issue.amount:true,{...issue.source,type:'review',reason:issue.reason});
   const fixed=s.grade===10 && s.classroom===7;
   const differential=fixed || (s.manual?.differential ?? s.differential?.enabled ?? false);
-  if(differential)for(const kind of ['time','reading','typing','enlarged','adapted','spelling'])add(kind,kind==='time'?'unspecified':true,{type:fixed?'class7':'differential',value:fixed?'כל תלמידי י׳7, לפי הוראת בית הספר':(s.differential?.line||'סימון ידני'),note:kind==='time'?'אחוז תוספת הזמן נלקח ממקור מאושר אחר או מוזן ידנית; המעמד אינו קובע אחוז':undefined});
-  const immigrant=s.manual?.immigrant;
+  if(differential)for(const kind of ['time','reading','typing','enlarged','adapted'])add(kind,kind==='time'?'unspecified':true,{type:fixed?'class7':'differential',value:fixed?'כל תלמידי י׳7, לפי הוראת בית הספר':(s.differential?.line||'סימון ידני'),note:kind==='time'?'אחוז תוספת הזמן נלקח ממקור מאושר אחר או מוזן ידנית; המעמד אינו קובע אחוז':undefined});
+  const immigrant=IMMIGRANT_RULES[s.manual?.immigrant]?s.manual.immigrant:null;
   if(immigrant && IMMIGRANT_RULES[immigrant])add('time',25,{type:'immigrant',value:`רמה ${IMMIGRANT_RULES[immigrant].label}`});
   for(const [kind,value] of Object.entries(s.manual?.accommodations||{})) {
     // Mandatory classroom-7/differential entitlements cannot be removed.
-    if(value===false && differential && ['reading','typing','enlarged','adapted','spelling'].includes(kind))continue;
+    if(value===false && differential && ['reading','typing','enlarged','adapted'].includes(kind))continue;
     sources[kind]=[];
     if(value!==false && value!==0)add(kind,kind==='time'?Number(value):true,{type:'manual',value:String(value),previous:s.original.accommodations.filter(a=>a.kind===kind).map(a=>a.source)});
     else if(differential && kind==='time')add(kind,'unspecified',{type:fixed?'class7':'differential',value:'זכאות מחייבת, אחוז טעון השלמה'});
   }
   if(s.grade===10 && sources.small?.length){exclusions.push('כיתה מצומצמת הוחרגה: אינה חלה בשכבה י׳');sources.small=[];}
+  if(!immigrant && sources.spelling?.length){exclusions.push('התעלמות משגיאות כתיב הוחרגה: התאמה זו מיועדת לעולים בלבד, והתלמיד אינו מסומן כעולה. מקור הסימון נשמר');sources.spelling=[];}
   const a={};for(const k of Object.keys(ACCOMMODATIONS)){if(k==='time'){const numeric=(sources[k]||[]).map(x=>Number(x.amount)||0);a[k]=Math.max(0,...numeric)||((sources[k]||[]).length?'unspecified':0);}else a[k]=!!sources[k]?.length;}
   const questionnaire=immigrant && s.grade===11 ? ((immigrant==='B' && s.manual?.immigrantException)?'11264':IMMIGRANT_RULES[immigrant].questionnaire) : null;
   return {...a,computer:!!(a.reading||a.typing),differential,fixed,immigrant,questionnaire,sources,exclusions};

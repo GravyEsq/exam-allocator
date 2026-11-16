@@ -59,3 +59,29 @@ test('H imports time and Hebrew typing while preserving the original Excel value
  const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','תוספת זמן 33%','הקלדה בעברית'],['001234567','שם פיקטיבי','יא',1,'H',''],['001234568','שם בדיקה','יא',2,'','H']]);
  assert.equal(effective(students[0]).time,33);assert.equal(effective(students[0]).computer,false);assert.equal(effective(students[1]).typing,true);assert.equal(effective(students[1]).computer,true);assert.equal(students[0].original.accommodations[0].source.value,'H');assert.equal(dataProblems(students).length,0);
 });
+test('spelling adaptation activates only for an immigrant with an explicit source, preserving that source when status is removed',()=>{
+ const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','התעלמות משגיאות כתיב'],['001234567','שם פיקטיבי','יא',1,'H']]);
+ const s=students[0];assert.equal(dataProblems(students).length,0);assert.equal(effective(s).spelling,false);assert.match(effective(s).exclusions.join(' '),/לעולים בלבד/);
+ assert.equal(s.original.accommodations[0].source.value,'H');
+ for(const level of ['A','B','C']){s.manual.immigrant=level;assert.equal(effective(s).spelling,true);}
+ s.manual.immigrant=null;assert.equal(effective(s).spelling,false);assert.equal(s.original.accommodations[0].source.value,'H');
+ s.manual.immigrant='B';assert.equal(effective(s).spelling,true);
+ const noSource=make(1)[0];noSource.manual.immigrant='B';assert.equal(effective(noSource).spelling,false);
+});
+test('non-immigrants cannot get spelling through a manual override, review, differential status or grade-10 class 7',()=>{
+ for(const s of [make(1)[0],make(1,{grade:10,classroom:7})[0]]){
+  s.manual.differential=true;s.manual.accommodations.spelling=true;
+  s.issues.push({kind:'spelling',amount:true,resolution:'grant',source:{type:'excel',value:'X'}});
+  assert.equal(effective(s).spelling,false);assert.equal(effective(s).computer,true);
+  s.manual.immigrant='C';assert.equal(effective(s).spelling,true);
+ }
+ const s=make(1)[0];s.manual.differential=true;assert.equal(effective(s).spelling,false);
+ s.manual.immigrant='C';assert.equal(effective(s).spelling,false);
+});
+test('hearing companion columns are excluded for X and H and do not need review or grant a computer',()=>{
+ for(const header of ['מלווה ללקוי שמיעה','מלווה לתלמידי שמע','מלווה לתלמידים לקויי שמיעה'])for(const value of ['X','H','H (עברית)']){
+  const a=interpretCell(header,value,11);assert.equal(a.status,'excluded');assert.match(a.reason,/אינו התאמה רלוונטית/);
+  const {students,unknown}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה',header],['001234567','שם פיקטיבי','יא',1,value]]);
+  assert.equal(unknown.length,0);assert.equal(dataProblems(students).length,0);assert.equal(effective(students[0]).computer,false);assert.equal(students[0].original.excluded.length,1);
+ }
+});
