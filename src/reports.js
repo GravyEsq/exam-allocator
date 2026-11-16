@@ -24,18 +24,17 @@ function supervisorAccommodations(s){
  if(e.questionnaire)parts.push(`שאלון ${e.questionnaire}`);
  return parts.join(', ')||'ללא התאמות';
 }
-export function reportHTML(type,grade,students,rooms,result){
- if(![10,11,12].includes(Number(grade)))throw new Error('יש לבחור שכבה אחת להדפסה');
+export function reportHTML(type,students,rooms,result){
  if(!result?.complete)throw new Error('הדפסה זמינה רק לאחר שיבוץ מלא ועדכני');
  const roomPages=[];
  for(const r of rooms){
-  const keys=result.assignments[r.id]||[],allMembers=students.filter(s=>keys.includes(s.key)),members=sortedStudents(allMembers.filter(s=>s.grade===Number(grade)));
+  const keys=result.assignments[r.id]||[],members=sortedStudents(students.filter(s=>s.active&&keys.includes(s.key)));
   if(!members.length)continue;
   if(members.length>38&&!result.manualPlacements?.length)throw new Error(`בחדר ${r.name} יש יותר מ־38 תלמידים; אין אפשרות להבטיח עמוד אחד`);
   const pageCount=Math.ceil(members.length/38);
   for(let page=0;page<pageCount;page++){
   const pageMembers=members.slice(page*38,(page+1)*38);
-  const title=`<header><span class="room-count">${pageMembers.length} נבחנים · שכבה ${h(gradeLabel(Number(grade)))}${pageCount>1?` · חלק ${page+1} מתוך ${pageCount} · ${members.length} בחדר`:''}</span><h1>חדר ${h(r.name)}</h1><h2>בחינה בעברית / לשון${type==='supervisor'?` · ${h(roomSubtitle(allMembers))}${allMembers.length!==members.length?' · משותף לכמה שכבות':''}`:''}</h2></header>`;
+  const title=`<header><span class="room-count">${pageMembers.length} נבחנים${pageCount>1?` · חלק ${page+1} מתוך ${pageCount} · ${members.length} בחדר`:''}</span><h1>חדר ${h(r.name)}</h1><h2>בחינה בעברית / לשון${type==='supervisor'?` · ${h(roomSubtitle(members))}`:''}</h2></header>`;
   let body;
   if(type==='students'){
    const half=Math.ceil(pageMembers.length/2),columns=[pageMembers.slice(0,half),pageMembers.slice(half)];
@@ -47,7 +46,7 @@ export function reportHTML(type,grade,students,rooms,result){
   }
  }
  if(!roomPages.length)throw new Error('אין נבחנים משובצים בשכבה שנבחרה');
- return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>דוח ${type==='students'?'תלמידים':'משגיחים'} — ${h(gradeLabel(Number(grade)))}</title><style>${PRINT_CSS}</style></head><body>${roomPages.join('')}</body></html>`;
+ return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>דוח ${type==='students'?'תלמידים':'משגיחים'} — כל הנבחנים</title><style>${PRINT_CSS}</style></head><body>${roomPages.join('')}</body></html>`;
 }
 const csvCell=value=>{let v=String(value??'');if(/^[=+@\-\t\r]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"';};
 export function assignmentCSV(students,rooms,result){

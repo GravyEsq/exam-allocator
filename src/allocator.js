@@ -22,7 +22,7 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
  const constraint=(name,vars,type,lb=0,ub=0)=>lp.subjectTo.push({name,vars,bnds:{type,lb,ub}});
  const cost=(name,coef)=>{if(coef)lp.objective.vars.push(term(name,coef));};
  const binary=(name,coef=0)=>{lp.binaries.push(name);cost(name,coef);return name;};
- const n=students.length, moveCost=20, mixCost=1000*(n+1), computerOpenCost=10000*(n+1);
+ const n=students.length, moveCost=20, mixCost=100, computerOpenCost=10000*(n+1);
  for(let g=0;g<groups.length;g++){
   const group=groups[g],vars=[];
   for(let r=0;r<rooms.length;r++)if(eligible(group.students[0],rooms[r],{allowMixedGrades,directives})&&(!directives.some(d=>pairParticipant(group.students[0],d))||(rooms[r].type==='regular'&&!rooms[r].smallOnly))){
@@ -45,12 +45,6 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
    const z=binary(`directive${i}_${r}`),other=v.filter(x=>!own.includes(x));
    constraint(`directiveOwn${i}_${r}`,[...own.map(x=>term(x.name)),term(z,-cap)],G.GLP_UP,0,0);
    constraint(`directiveExclusive${i}_${r}`,[...other.map(x=>term(x.name)),term(z,cap)],G.GLP_UP,0,cap);
-   if(d.type==='pair'){
-    const a=own.filter(x=>classKey(groups[x.g])===d.classes[0]),b=own.filter(x=>classKey(groups[x.g])===d.classes[1]);
-    constraint(`pairBothA${i}_${r}`,[...a.map(x=>term(x.name)),term(z,-1)],G.GLP_LO,0,0);
-    constraint(`pairBothB${i}_${r}`,[...b.map(x=>term(x.name)),term(z,-1)],G.GLP_LO,0,0);
-    constraint(`pairBalance${i}_${r}`,[...a.map(x=>term(x.name)),...b.map(x=>term(x.name,-1))],G.GLP_DB,-1,1);
-   }
   }
   if(room.type==='fixed'||room.type==='closed')constraint(`wholeClosedClass${r}`,[...load,term(used,-students.filter(s=>s.grade===room.grade&&s.classroom===room.classroom).length)],G.GLP_FX,0,0);
   const small=v.filter(v=>groups[v.g].small);
@@ -73,10 +67,10 @@ export function buildModel(students,rooms,glpk,{allowMixedGrades=false,partial=f
    const flags=[];for(const grade of new Set(v.map(v=>groups[v.g].grade))){const z=binary(`grade${r}_${grade}`);flags.push(term(z));constraint(`gradeLink${r}_${grade}`,[...v.filter(v=>groups[v.g].grade===grade).map(v=>term(v.name)),term(z,-cap)],G.GLP_UP,0,0);}
    if(flags.length)constraint(`oneGrade${r}`,flags,G.GLP_UP,0,1);
   }
-  // Convex load cost. Cost weights make moving home students less desirable than a small ordinary-room imbalance.
-  // Computer rooms balance after room count is minimized (40 in equal rooms -> 20/20).
+  // Large occupancy gaps outweigh staying home or avoiding one mixed-time room.
+  // These are soft preferences: small gaps are acceptable and mandatory rules still apply.
   const slots=[];
-  for(let k=1;k<=cap;k++){const name=`slot${r}_${k}`;slots.push(term(name,-1));lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:1});cost(name,(2*k-1)*(room.type==='computer'?1:.02));}
+  for(let k=1;k<=cap;k++){const name=`slot${r}_${k}`;slots.push(term(name,-1));lp.bounds.push({name,type:G.GLP_DB,lb:0,ub:1});cost(name,(2*k-1)*4);}
   constraint(`loadCost${r}`,[...load,...slots],G.GLP_FX,0,0);
  }
  return {lp,groups,variables};
@@ -143,7 +137,7 @@ export function diagnose(s,students,rooms,{timedOut=false,directives=[],allowMix
   const timeout=timedOut?' זמן החיפוש הסתיים; אפשר גם להאריך אותו.':'';
   if(directive.type==='pair'&&pairParticipant(s,directive)){
    const counts=directive.classes.map(k=>students.filter(t=>classKey(t)===k&&pairParticipant(t,directive)).length),regular=eligibleRooms.filter(r=>r.type==='regular'&&!r.smallOnly);
-   return `${directiveLabel(directive)}: ${counts.join(' מול ')} נבחנים לצימוד, ${regular.length} חדרי אם פתוחים. הצימוד מוגבל לחדרי האם של שתי הכיתות בלבד, עם פער של עד תלמיד אחד ושמירת הקבוצות החברתיות. יש לפתוח את חדרי האם, להתאים את קיבולותיהם, לשנות את הצימוד או לבחור חדר ידנית.${timeout}`;
+   return `${directiveLabel(directive)}: ${counts.join(' ועוד ')} נבחנים בצימוד, ${regular.length} חדרי אם פתוחים. שתי הכיתות חולקות את חדרי האם שלהן, ללא יחס מחייב ביניהן ותוך שמירת הקבוצות החברתיות. יש לפתוח את חדרי האם, להתאים את קיבולותיהם, לשנות את הצימוד או לבחור חדר ידנית.${timeout}`;
   }
   if(directive.type==='isolate')return `${directiveLabel(directive)} מחייבת חדרים בלעדיים לכיתה, גם במחשב ובכיתה מצומצמת. יש לפתוח חדר מתאים נוסף או לשנות את ההנחיה; ניתן לפצל את הכיתה בין חדרים ללא ערבוב.${timeout}`;
  }
@@ -158,7 +152,7 @@ export function reasonFor(s,r,directives=[]){
  const e=effective(s),parts=[];
  if(e.fixed)return 'י׳7 נבחנת בכיתתה כקבוצה סגורה, לפי הוראת בית הספר';
  if(s.grade===11&&s.classroom===7)parts.push('י״א7 נבחנת כקבוצה סגורה בחדרה, ללא תלמידים מכיתות אחרות');
- for(const d of directives.filter(d=>d.classes.includes(classKey(s))))parts.push(d.type==='isolate'?'הנחיה מיוחדת: הכיתה אינה מתערבבת עם כיתות אחרות':pairParticipant(s,d)?`${directiveLabel(d)}; פער של עד תלמיד אחד בכל חדר צימוד`:'חריג לצימוד: השיבוץ נקבע לפי הצורך במחשב או בכיתה מצומצמת');
+ for(const d of directives.filter(d=>d.classes.includes(classKey(s))))parts.push(d.type==='isolate'?'הנחיה מיוחדת: הכיתה אינה מתערבבת עם כיתות אחרות':pairParticipant(s,d)?`${directiveLabel(d)}; חלוקה בין שני חדרי האם לפי התפוסה, ללא מכסה לכל כיתה`:'חריג לצימוד: השיבוץ נקבע לפי הצורך במחשב או בכיתה מצומצמת');
  if(e.computer)parts.push('נדרש מחשב בשל הקראה או הקלדה');
  if(e.small)parts.push(`נדרשת כיתה מצומצמת: עד ${r.smallCapacity} נבחנים בסך הכול`);
  if(r.grade===s.grade&&r.classroom===s.classroom)parts.push('נשאר/ה בכיתת האם');

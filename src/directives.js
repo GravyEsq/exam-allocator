@@ -6,7 +6,7 @@ export const classFromKey=key=>{const [grade,classroom]=String(key).split(':').m
 export const className=key=>classLabel(classFromKey(key));
 export const pairParticipant=(s,d)=>d.type==='pair'&&d.classes.includes(classKey(s))&&!effective(s).computer&&!effective(s).small;
 export const pairRoom=(r,d)=>r.type==='regular'&&!r.smallOnly&&d.classes.includes(classKey(r));
-export function directiveLabel(d){return d.type==='pair'?`צימוד חצי־חצי: ${d.classes.map(className).join(' + ')}`:`ללא ערבוב: ${className(d.classes[0])}`;}
+export function directiveLabel(d){return d.type==='pair'?`צימוד כיתות: ${d.classes.map(className).join(' + ')}`:`ללא ערבוב: ${className(d.classes[0])}`;}
 export function validateDirectives(directives,students,{allowMixedGrades=false}={}){
  const errors=[],available=new Set(students.filter(s=>s.active).map(classKey)),used=new Set();
  if(!Array.isArray(directives))return ['רשימת הנחיות השיבוץ אינה תקינה'];
@@ -33,8 +33,7 @@ export function auditDirectives(members,room,directives){
    if(members.some(s=>classKey(s)===d.classes[0])&&members.some(s=>classKey(s)!==d.classes[0]))errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}`);
   }else{
    const paired=members.filter(s=>pairParticipant(s,d));if(!paired.length)continue;
-   const a=paired.filter(s=>classKey(s)===d.classes[0]).length,b=paired.length-a;
-   if(!pairRoom(room,d)||paired.length!==members.length||!a||!b||Math.abs(a-b)>1)errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; נדרשים חדרי האם של שתי הכיתות בלבד ופער של עד תלמיד אחד`);
+   if(!pairRoom(room,d)||paired.length!==members.length)errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; הצימוד משתמש רק בחדרי האם של שתי הכיתות וללא תלמידים מכיתות אחרות`);
   }
  }
  return errors;
