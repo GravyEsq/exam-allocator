@@ -31,6 +31,28 @@ export function importSheets(w,names,XLSX){
  for(const name of names){const r=parseRows(XLSX.utils.sheet_to_json(w.Sheets[name],{header:1,defval:'',raw:false}),name);out.students.push(...r.students);out.sheets.push({name,headerRow:r.headerRow,unknown:r.unknown});}
  return out;
 }
+// Re-evaluate a restored session from raw Excel cells. Retain explicit review decisions
+// unless the current policy excludes that source; never discard manual overrides.
+export function refreshImportedRules(students){
+ let changed=false;
+ for(const s of students){
+  if(!Array.isArray(s.original?.headers)||!Array.isArray(s.original?.cells))continue;
+  const before=JSON.stringify([s.original.accommodations,s.original.excluded,s.issues]),previous=new Map((s.issues||[]).map(i=>[i.key,i]));
+  const accommodations=[],excluded=[],issues=[];
+  for(let j=0;j<Math.max(s.original.headers.length,s.original.cells.length);j++){
+   const header=s.original.headers[j]||`עמודה ללא כותרת ${j+1}`,a=interpretCell(header,s.original.cells[j],s.grade),key=`${s.key}:${j}`,old=previous.get(key);
+   a.source={...a.source,sheet:s.original.sheet,row:s.original.row};
+   if(a.status==='excluded')excluded.push(a);
+   else if(a.status==='review')issues.push(old?.resolution?old:{...a,originalKind:a.kind,originalAmount:a.amount,key,resolution:null});
+   else if(a.status==='granted'||a.status==='conditional'){
+    if(old?.resolution)issues.push(old);else accommodations.push(a);
+   }
+  }
+  s.original.accommodations=accommodations;s.original.excluded=excluded;s.issues=issues;
+  if(before!==JSON.stringify([accommodations,excluded,issues]))changed=true;
+ }
+ return changed;
+}
 export function dataProblems(students){
  const errors=[],seen=new Map();
  for(const s of students.filter(s=>s.active)){

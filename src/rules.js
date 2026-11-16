@@ -7,21 +7,35 @@ export const IMMIGRANT_RULES={
   C:{label:'ג׳',time:25,questionnaire:'11264'}
 };
 const identification={ 'תז':'id','שםהתלמיד':'name','שכבה':'grade','כיתה':'classroom','מס':'metadata','מספר':'metadata','קבוצה':'metadata' };
+const otherSubjects='אנגלית|מתמטיקה|היסטוריה|ספרות|אזרחות|תנך|ביולוגיה|פיזיקה|כימיה|גאוגרפיה|גיאוגרפיה|ערבית|צרפתית|רוסית|ספרדית|מדעיהמחשב';
+// Scope is checked separately from a positive marker. Hebrew must be explicit in a scoped list.
+export function subjectScope(text){
+ const k=headerKey(text),hasHebrew=/עברית|לשון/.test(k);
+ if(/(?:אינם|אינן|אינה|אינו|לא)כולל(?:ים|ות|ת)?(?:את)?(?:עברית|לשון)/.test(k))return {excluded:true,reason:'הטקסט מציין במפורש שההתאמה אינה חלה בעברית/לשון'};
+ if(/(?:לא|ללא|למעט|פרטל|חוץמ)(?:ב|ל|מ|את)?(?:עברית|לשון)|(?:עברית|לשון)(?:לאכלולה|אינהכלולה|אינוכלול|לאזכאי|לאמאושר|לאחל|לא$)/.test(k))return {excluded:true,reason:'הטקסט מציין במפורש שההתאמה אינה חלה בעברית/לשון'};
+ const positive=k.replace(new RegExp(`(?:לא|ללא|למעט|פרטל|חוץמ)(?:ב|ל|מ|את)?(?:${otherSubjects})`,'g'),'');
+ const groups=/רבימלל|דלימלל/.test(positive),other=new RegExp(otherSubjects).test(positive)||/שאלוןe/i.test(positive);
+ const specificGroup=/(?:במקצוע|למקצוע|מקצועות|קבוצת|קבוצות)/.test(positive)&&!/(?:כלל|בכל|לכל|כל)ה?מקצוע(?:ות)?/.test(positive);
+ if(!hasHebrew&&(groups||other||specificGroup))return {excluded:true,reason:groups?'התאמה לדלי מלל או לרבי מלל אינה חלה בעברית/לשון':'ההתאמה מוגבלת למקצועות או לקבוצה שאינם כוללים במפורש עברית/לשון'};
+ return {excluded:false,hasHebrew};
+}
 export function classifyHeader(header) {
   const k=headerKey(header), h=clean(header);
   if(identification[k]) return {kind:identification[k],scope:'identity'};
   if(/מלווה/.test(k) && /שמע|שמיע/.test(k))return {kind:'excluded',scope:'other',reason:'מלווה ללקוי שמיעה אינו התאמה רלוונטית לבחינה בעברית/לשון'};
-  if(/אנגלית|מתמטיקה|שאלוןe/i.test(k)) return {kind:'excluded',scope:'other',reason:'התאמה למקצוע אחר אינה מקנה זכאות בעברית'};
-  if(/רבימלל/.test(k)) return {kind:'excluded',scope:'other',reason:'התאמה המוגבלת לרבי מלל אינה חלה בעברית'};
-  if(/דלימלל/.test(k)) return {kind:'review',scope:'unclear',reason:'דלי מלל: נדרש מיפוי מפורש ומאושר'};
+  const scope=subjectScope(header);
+  if(scope.excluded)return {kind:'excluded',scope:'other',reason:scope.reason};
   if(/^תוספתזמן/.test(k)) {
     const percent = h.match(/(\d+(?:\.\d+)?)\s*%/);
     return {kind:'time',scope:'general',percent:percent?Number(percent[1]):null};
   }
   const explicit={'הקראהבעברית':'reading','הקראתשאלוןבעברית':'reading','הקלדהבעברית':'typing','מבחןמותאםבעברית':'adapted','מבחןמותאםבלשון':'adapted'};
   if(explicit[k])return {kind:explicit[k],scope:'hebrew'};
-  const general={'הקלדה':'typing','הקראתשאלון':'reading','הקראה':'reading','הגדלתשאלון':'enlarged','הגדלה':'enlarged','כיתהמצומצמת':'small','התעלמותמשגיאותכתיב':'spelling'};
-  if(general[k])return {kind:general[k],scope:general[k]==='spelling'?'immigrant':'general',needsApproval:['typing','reading'].includes(general[k])};
+  const general={'הקלדה':'typing','הקראתשאלון':'reading','הקראה':'reading','הגדלתשאלון':'enlarged','הגדלה':'enlarged','כיתהמצומצמת':'small','התעלמותמשגיאותכתיב':'spelling','מבחןמותאם':'adapted'};
+  // An explicitly Hebrew-inclusive subject suffix does not create a new accommodation kind.
+  const suffix=new RegExp(`^(?:(?:ב|ל|ו)?(?:עברית|לשון|${otherSubjects}|רבימלל|דלימלל|מקצועות|בלבד|itest)|[,&+])+$`,'i');
+  const base=general[k]?k:scope.hasHebrew?Object.keys(general).find(b=>k.startsWith(b)&&suffix.test(k.slice(b.length))):null;
+  if(base)return {kind:general[base],scope:general[base]==='spelling'?'immigrant':scope.hasHebrew?'hebrew':'general'};
   return {kind:'unknown',scope:'unclear',reason:'כותרת לא מוכרת; אין זכאות אוטומטית'};
 }
 export function interpretCell(header,raw,grade) {
@@ -31,16 +45,14 @@ export function interpretCell(header,raw,grade) {
   if(['id','name','grade','classroom','metadata'].includes(h.kind)) return outcome('metadata','');
   // Excluded columns never acquire an exception from their cell contents.
   if(h.kind==='excluded')return outcome('excluded',h.reason);
-  if(/(?:^|[ (,:;])(?:לא|ללא|אין|מבוטל|בוטל|שלילה)(?:$|[ )\s,:;])/.test(value) || /^(?:0|לא|[-–])$/.test(value))return outcome('excluded','שלילה או ביטול בתוכן התא');
-  if(/רבי\s*מלל/i.test(value)) return outcome('excluded','הערה בתא מגבילה לרבי מלל או ל־iTest רבי מלל');
-  if(/אנגלית|מתמטיקה/.test(value) && !/עברית|לשון/.test(value))return outcome('excluded','תוכן התא מגביל למקצוע אחר');
-  if(/דלי\s*מלל/.test(value))return outcome('review','הגבלה לדלי מלל דורשת מיפוי מאושר');
+  if(/(?:לא|אינו|אינה)\s*זכאי|אין\s*זכאות|מבוטל|בוטל|נשלל|שלילה/.test(value)||/^(?:0|לא|ללא|אין|[-–])$/.test(value))return outcome('excluded','שלילה או ביטול בתוכן התא');
+  const negatedKind={typing:/ללא\s*הקלדה|אין\s*הקלדה/,reading:/ללא\s*הקראה|אין\s*הקראה/,time:/ללא\s*תוספת\s*זמן|אין\s*תוספת\s*זמן/,small:/ללא\s*כיתה\s*מצומצמת/,enlarged:/ללא\s*הגדלה/,adapted:/ללא\s*מבחן\s*מותאם/,spelling:/ללא\s*התעלמות\s*משגיאות/};
+  if(negatedKind[h.kind]?.test(value))return outcome('excluded','שלילה מפורשת של ההתאמה בתוכן התא');
+  const cellScope=subjectScope(value);
+  if(cellScope.excluded)return outcome('excluded',cellScope.reason);
   if(h.kind==='small' && grade===10)return outcome('excluded','בשכבה י׳ אין זכאות לכיתה מצומצמת');
   if(h.kind==='unknown' || h.kind==='review')return outcome('review',h.reason);
   if(!/^[xh](?:\s|$|\()/i.test(value))return outcome('review','סימון שאינו X או H; יש לברר את משמעותו');
-  const note=value.replace(/^[xh]/i,'').trim();
-  if(note && !/^\(\s*(?:עברית|לשון)\s*\)$/.test(note)) return outcome('review','יש הערה בתא: נדרשת הכרעה לאחר קריאת התוכן המלא');
-  if(h.needsApproval)return outcome('review','סימון כללי בהקלדה או בהקראה מחייב אישור ידני לעברית');
   if(h.kind==='spelling')return outcome('conditional','התאמה לעולים בלבד; הסימון יופעל רק לאחר סימון התלמיד כעולה',true);
   if(h.kind==='time' && !h.percent)return outcome('review','לא זוהה אחוז תוספת הזמן');
   return outcome('granted','זכאות מפורשת לעברית או התאמה כללית מאושרת',h.kind==='time'?h.percent:true);

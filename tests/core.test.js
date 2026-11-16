@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import {clean,headerKey,gradeOf,validateStudent} from '../src/normalize.js';
-import {parseRows,dataProblems} from '../src/importer.js';
+import {parseRows,dataProblems,refreshImportedRules} from '../src/importer.js';
 import {interpretCell,effective,accommodationText} from '../src/rules.js';
 import {candidates,matchLines} from '../src/matching.js';
 import {defaultRooms} from '../src/rooms.js';
@@ -18,9 +18,9 @@ test('missing and duplicate identifying columns are rejected',()=>{assert.throws
 test('time alone and enlargement alone never grant computer eligibility',()=>{assert.equal(effective(make(1,{time:25})[0]).computer,false);const s=make(1)[0];s.original.accommodations.push({kind:'enlarged',amount:true,source:{type:'excel'}});assert.equal(effective(s).computer,false);});
 test('English typing column never grants Hebrew typing even with Hebrew cell note',()=>{assert.equal(interpretCell('הקלדה - אנגלית','X (עברית)',11).status,'excluded');});
 test('iTest verbose subjects cancels typing and does not grant a computer',()=>{const a=interpretCell('הקלדה','X (בitest רבי מלל)',11);assert.equal(a.status,'excluded');const s=make(1,{time:25})[0];assert.equal(effective(s).computer,false);});
-test('English reading, mathematics and verbose adaptations are excluded; low text needs review',()=>{for(const h of ['הקראה באנגלית','מבחן מותאם במתמטיקה','הקלדה - רבי מלל'])assert.equal(interpretCell(h,'X',11).status,'excluded');assert.equal(interpretCell('הקראת שאלון - דלי מלל','X',11).status,'review');});
-test('generic X typing and reading require review by explicit user instruction',()=>{for(const h of ['הקלדה','הקראת שאלון'])assert.equal(interpretCell(h,'X',11).status,'review');assert.equal(interpretCell('הקלדה בעברית','X',11).status,'granted');});
-test('negative and limiting notes are not automatic eligibility',()=>{assert.equal(interpretCell('הקלדה בעברית','X (לא זכאי)',11).status,'excluded');assert.equal(interpretCell('תוספת זמן 25%','H',11).status,'granted');assert.equal(interpretCell('תוספת זמן 25%','X (באופן זמני עד אפריל)',11).status,'review');assert.equal(interpretCell('הקלדה בעברית','X (במבחנים באנגלית בלבד)',11).status,'excluded');});
+test('English reading, mathematics, verbose and low text adaptations are excluded',()=>{for(const h of ['הקראה באנגלית','מבחן מותאם במתמטיקה','הקלדה - רבי מלל'])assert.equal(interpretCell(h,'X',11).status,'excluded');assert.equal(interpretCell('הקראת שאלון - דלי מלל','X',11).status,'excluded');});
+test('generic X typing and reading grant eligibility under the updated policy',()=>{for(const h of ['הקלדה','הקראת שאלון'])assert.equal(interpretCell(h,'X',11).status,'granted');assert.equal(interpretCell('הקלדה בעברית','X',11).status,'granted');});
+test('negative and limiting notes are not automatic eligibility',()=>{assert.equal(interpretCell('הקלדה בעברית','X (לא זכאי)',11).status,'excluded');assert.equal(interpretCell('תוספת זמן 25%','H',11).status,'granted');assert.equal(interpretCell('תוספת זמן 25%','X (באופן זמני עד אפריל)',11).status,'granted');assert.equal(interpretCell('הקלדה בעברית','X (במבחנים באנגלית בלבד)',11).status,'excluded');});
 test('unknown positive columns require review and cannot grant eligibility',()=>{assert.equal(interpretCell('זכאות חדשה','X',11).status,'review');assert.equal(interpretCell('זכאות חדשה','',11).status,'empty');});
 test('original 25 and 33 percent values are preserved separately in provenance',()=>{const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','תוספת זמן 25%','תוספת זמן 33%'],['001234567','שם פיקטיבי','יא',1,'X','X']]);assert.equal(effective(students[0]).time,33);assert.deepEqual(students[0].original.accommodations.map(a=>a.amount),[25,33]);});
 test('grade 10 never gets a small class from either Excel or manual changes',()=>{assert.equal(interpretCell('כיתה מצומצמת','X',10).status,'excluded');const s=make(1,{grade:10,small:true})[0];s.manual.accommodations.small=true;assert.equal(effective(s).small,false);});
@@ -84,4 +84,32 @@ test('hearing companion columns are excluded for X and H and do not need review 
   const {students,unknown}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה',header],['001234567','שם פיקטיבי','יא',1,value]]);
   assert.equal(unknown.length,0);assert.equal(dataProblems(students).length,0);assert.equal(effective(students[0]).computer,false);assert.equal(students[0].original.excluded.length,1);
  }
+});
+test('ordinary positive notes on known accommodations do not create review blockers',()=>{
+ for(const value of ['X','H','X (על סמך אבחון קשב)','H (באופן זמני עד אפריל, ולאחר מכן ישקל מחדש.)','X (השמעה נוספת במבחנים עם קטעי שמיעה)','H (זכאי להקליד בשיעורים ובמבחנים בלפטופ.)','X (לא נדרש אבחון)','H (ללא אבחון)','X (לכל מקצוע)','H (בכל המקצועות)']){
+  assert.equal(interpretCell('הקלדה',value,11).status,'granted',value);
+  assert.equal(interpretCell('תוספת זמן 33%',value,11).amount,33);
+ }
+ const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','הקלדה','הקראת שאלון'],['001234567','שם פיקטיבי','יא',1,'H (זכאי להקליד בשיעורים ובמבחנים בלפטופ.)','X']]);
+ assert.equal(dataProblems(students).length,0);assert.equal(effective(students[0]).typing,true);assert.equal(effective(students[0]).reading,true);assert.equal(effective(students[0]).computer,true);
+});
+test('scoped notes for other subjects or text groups are excluded unless Hebrew is explicitly included',()=>{
+ for(const note of ['דלי מלל','בitest רבי מלל','במקצועות מתמטיקה ופיזיקה','אנגלית בלבד','מקצועות מדעיים','לרבי מלל ולא לעברית','לכל המקצועות למעט עברית','מקצועות שאינם כוללים עברית'])assert.equal(interpretCell('הקלדה',`H (${note})`,11).status,'excluded',note);
+ for(const note of ['עברית ואנגלית','לרבי מלל ולעברית','דלי מלל ולשון','במקצועות עברית ואנגלית','לא באנגלית'])assert.equal(interpretCell('הקלדה',`X (${note})`,11).status,'granted',note);
+ assert.equal(interpretCell('הקלדה - עברית ואנגלית','H',11).status,'granted');
+ assert.equal(interpretCell('הקראת שאלון - רבי מלל ולשון','H',11).status,'granted');
+});
+test('low-text and verbose columns do not create pending issues or computer eligibility',()=>{
+ const {students,unknown}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','הקראת שאלון - דלי מלל','הקלדה - רבי מלל'],['001234567','שם פיקטיבי','יא',1,'H','X']]);
+ assert.equal(unknown.length,0);assert.equal(dataProblems(students).length,0);assert.equal(students[0].original.excluded.length,2);assert.equal(effective(students[0]).computer,false);
+});
+test('restoring old pending source decisions applies updated rules while preserving identity and manual overrides',()=>{
+ const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','הקלדה','הקראת שאלון - דלי מלל'],['001234567','שם פיקטיבי','יא',1,'H (על סמך אבחון קשב)','X']]);
+ const s=students[0];s.manual.accommodations.time=33;s.original.accommodations=[];s.original.excluded=[];s.issues=[{key:s.key+':4',kind:'typing',resolution:null,source:{column:'הקלדה',value:'H (על סמך אבחון קשב)'}},{key:s.key+':5',kind:'review',resolution:null,source:{column:'הקראת שאלון - דלי מלל',value:'X'}}];
+ assert.equal(refreshImportedRules(students),true);assert.equal(dataProblems(students).length,0);assert.equal(effective(s).typing,true);assert.equal(effective(s).time,33);assert.equal(s.id,'001234567');assert.equal(s.original.excluded.length,1);assert.equal(refreshImportedRules(students),false);
+});
+test('explicit prior review decisions survive refresh, but cannot override an excluded subject source',()=>{
+ const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','הקלדה','הקראת שאלון - דלי מלל'],['001234567','שם פיקטיבי','יא',1,'X','H']]);
+ const s=students[0];s.original.accommodations=[];s.issues=[{key:s.key+':4',kind:'typing',resolution:'ignore',source:{column:'הקלדה',value:'X'}},{key:s.key+':5',kind:'reading',resolution:'grant',source:{column:'הקראת שאלון - דלי מלל',value:'H'}}];
+ refreshImportedRules(students);assert.equal(effective(s).typing,false);assert.equal(effective(s).reading,false);assert.equal(s.issues.length,1);assert.equal(s.issues[0].resolution,'ignore');assert.equal(dataProblems(students).length,0);
 });

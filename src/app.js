@@ -1,5 +1,5 @@
 import {clean,escapeHTML as h,gradeLabel,classLabel,natural,validateStudent} from './normalize.js';
-import {readWorkbook,sheetInfo,importSheets,dataProblems} from './importer.js';
+import {readWorkbook,sheetInfo,importSheets,dataProblems,refreshImportedRules} from './importer.js';
 import {effective,ACCOMMODATIONS,IMMIGRANT_RULES,accommodationText,sourceLabel} from './rules.js';
 import {matchLines,applyMatches} from './matching.js';
 import {defaultRooms,validateRooms} from './rooms.js';
@@ -58,7 +58,7 @@ function bindUpload(){
  $('#import')?.addEventListener('click',()=>{try{const names=$$('[data-sheet]:checked').map(x=>x.dataset.sheet);if(!names.length)throw new Error('יש לבחור גיליון אחד לפחות');loadData(importSheets(state.workbook,names,window.XLSX),state.fileName);}catch(e){toast(e.message);}});
  $('#mode')?.addEventListener('change',e=>{state.mode=e.target.value;if(state.mode==='single')state.grades=state.grades.slice(0,1);scopeChanged();});
  $$('input[name=grade]').forEach(b=>b.onchange=()=>{state.grades=$$('input[name=grade]:checked').map(x=>Number(x.value));scopeChanged();});
- $('#restore')?.addEventListener('click',()=>{try{const s=JSON.parse(stored('exam-allocator-session-v2'));if(s.version!==2||!Array.isArray(s.students))throw new Error('פורמט לא נתמך');Object.assign(state,s,{step:1,workbook:null,sheetInfos:[],busy:false,saveConsent:true});render();toast('העבודה שוחזרה מהמחשב הזה');}catch(e){toast('לא ניתן לשחזר: '+e.message);}});
+ $('#restore')?.addEventListener('click',()=>{try{const s=JSON.parse(stored('exam-allocator-session-v2'));if(s.version!==2||!Array.isArray(s.students))throw new Error('פורמט לא נתמך');Object.assign(state,s,{step:1,workbook:null,sheetInfos:[],busy:false,saveConsent:true});const rulesChanged=refreshImportedRules(state.students);if(rulesChanged&&state.result)state.stale=true;render();toast(rulesChanged?'העבודה שוחזרה וההתאמות עודכנו לפי הכללים הנוכחיים; יש לבדוק ולחשב מחדש':'העבודה שוחזרה מהמחשב הזה');}catch(e){toast('לא ניתן לשחזר: '+e.message);}});
  $('#erase-saved')?.addEventListener('click',()=>{localStorage.removeItem('exam-allocator-session-v2');render();toast('נתוני התלמידים השמורים נמחקו');});
 }
 function scopeChanged(){mutate();state.rooms=defaultRooms(state.grades);state.reportGrade=state.grades[0];if(state.matches.length){state.matches=matchLines(state.matches.map(m=>m.line).join('\n'),selected());applyMatches(state.matches,state.students);}render();}
