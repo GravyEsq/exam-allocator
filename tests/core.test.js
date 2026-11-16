@@ -8,7 +8,7 @@ import {candidates,matchLines} from '../src/matching.js';
 import {defaultRooms,ensureGrade11Class7Room} from '../src/rooms.js';
 import {allocate,audit,eligible} from '../src/allocator.js';
 import {classKey,pairParticipant,validateDirectives} from '../src/directives.js';
-import {reportHTML,assignmentCSV} from '../src/reports.js';
+import {reportHTML,reportRTF,assignmentCSV} from '../src/reports.js';
 import {placeManually,undoManualPlacement,reapplyManualPlacements} from '../src/manual-allocation.js';
 const require=createRequire(import.meta.url),glpk=require('../vendor/glpk-node.cjs')();
 const make=(n,{grade=11,classroom=1,typing=false,reading=false,time=0,small=false}={})=>Array.from({length:n},(_,i)=>({key:`${grade}:${classroom}:${typing}:${small}:${time}:${i}`,id:String(800000000+(grade-10)*1000000+classroom*10000+i),name:`תלמיד פיקטיבי ${classroom} ${i}`,grade,classroom,active:true,manual:{accommodations:{}},issues:[],original:{sheet:'פיקטיבי',row:i+2,identity:{},accommodations:Object.entries({typing,reading,time,small}).filter(([,v])=>v).map(([kind,amount])=>({kind,amount,source:{type:'excel',column:kind,value:'X'}})),excluded:[]}}));
@@ -16,6 +16,29 @@ const pc=(id,capacity=38,smallCapacity=15)=>({id,name:id,type:'computer',enabled
 const regular=(id,classroom=1,capacity=38)=>({id,name:id,type:'regular',enabled:true,computer:false,capacity,smallCapacity:Math.min(15,capacity),grade:11,classroom});
 const pair={type:'pair',classes:['11:1','11:2']},isolate={type:'isolate',classes:['11:1']};
 function uniqueIds(ss){ss.forEach((s,i)=>s.id=String(900000000+i));return ss;}
+const readableRTF=rtf=>rtf.replace(/\\u(-?\d+)\?/g,(_,n)=>String.fromCharCode(Number(n)<0?Number(n)+65536:Number(n)));
+
+test('student reports contain only the room heading, count and the two lists without reading instructions or column headings',()=>{
+ const ss=make(8),rooms=[regular('a')],r={complete:true,assignments:{a:ss.map(s=>s.key)}};
+ const html=reportHTML('students',ss,rooms,r);assert.equal((html.match(/<tbody>/g)||[]).length,2);assert.ok(html.includes('8 נבחנים'));assert.ok(html.includes('<h1>חדר a</h1>'));
+ for(const text of ['<thead>','<th>','<h2>','סדר הקריאה','טור ראשון','טור שני','בחינה בעברית','מקרא:'])assert.ok(!html.includes(text),text);
+ const rtf=readableRTF(reportRTF('students',ss,rooms,r));assert.ok(rtf.includes('8 נבחנים'));assert.ok(!rtf.includes('סדר הקריאה'));assert.ok(!rtf.includes('כיתת אם'));assert.ok(!rtf.includes('נוכחות'));
+});
+test('supervisor reports hide basic time percentages and empty accommodation labels but retain headings and 33 percent',()=>{
+ const ss=uniqueIds([...make(1),...make(1,{time:25}),...make(1,{time:33}),...make(1,{time:33,typing:true})]);ss[3].manual.differential=true;
+ const rooms=[regular('a')],r={complete:true,assignments:{a:ss.map(s=>s.key)}},html=reportHTML('supervisor',ss,rooms,r),rtf=readableRTF(reportRTF('supervisor',ss,rooms,r));
+ assert.ok(html.includes(`<td class="name">${ss[0].name}</td><td>י״א1</td><td></td>`));
+ for(const output of [html,rtf]){assert.ok(output.includes('33%'));assert.ok(!output.includes('25%'));assert.ok(!output.includes('ללא התאמות'));assert.ok(output.includes('נוכחות'));assert.ok(output.includes('הגשה'));assert.ok(!output.includes('מקרא:'));assert.ok(output.includes('תוספת זמן 33%, הקראה, הקלדה'));}
+ assert.ok(html.includes('<th>התאמות</th>'));assert.match(assignmentCSV(ss,rooms,r),/25%/);assert.equal(effective(ss[1]).time,25);
+});
+test('RTF exports editable RTL tables with Unicode text, escaped input, all pupils and one explicit break per extra page',()=>{
+ const ss=make(40,{time:25});ss[0].name='שם {בדיקה} \\field 😀';const rooms=[regular('a')],r={complete:true,assignments:{a:ss.map(s=>s.key)},manualPlacements:[{key:ss[39].key,roomId:'a'}]};
+ for(const kind of ['students','supervisor']){
+  const raw=reportRTF(kind,ss,rooms,r),text=readableRTF(raw);assert.ok(raw.startsWith('{\\rtf1'));assert.ok(/^[\x00-\x7f]*$/.test(raw));assert.ok(raw.includes('\\rtlrow'));assert.ok(raw.includes('\\rtlpar'));assert.equal((raw.match(/\\page\b/g)||[]).length,1);assert.ok(text.includes('\\{בדיקה\\} \\\\field 😀'));
+  for(const s of ss.slice(1))assert.equal(text.split(s.name+'\\cell').length-1,1);assert.ok(text.includes('חלק 1 מתוך 2'));assert.ok(text.includes('חלק 2 מתוך 2'));assert.ok(!text.includes('25%'));
+  assert.throws(()=>reportRTF(kind,ss,rooms,{...r,complete:false}),/שיבוץ מלא/);
+ }
+});
 
 test('14 and 30 paired pupils split into 7 and 15 from each class in each original room',async()=>{
  const ss=[...make(14),...make(30,{classroom:2})],rooms=[regular('a'),regular('b',2)],r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,true);
