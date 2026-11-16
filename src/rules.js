@@ -36,8 +36,8 @@ export function interpretCell(header,raw,grade) {
   if(/דלי\s*מלל/.test(value))return outcome('review','הגבלה לדלי מלל דורשת מיפוי מאושר');
   if(h.kind==='small' && grade===10)return outcome('excluded','בשכבה י׳ אין זכאות לכיתה מצומצמת');
   if(h.kind==='unknown' || h.kind==='review')return outcome('review',h.reason);
-  if(!/^x(?:\s|$|\()/i.test(value))return outcome('review','סימון שאינו X; יש לברר את משמעותו');
-  const note=value.replace(/^x/i,'').trim();
+  if(!/^[xh](?:\s|$|\()/i.test(value))return outcome('review','סימון שאינו X או H; יש לברר את משמעותו');
+  const note=value.replace(/^[xh]/i,'').trim();
   if(note && !/^\(\s*(?:עברית|לשון)\s*\)$/.test(note)) return outcome('review','יש הערה בתא: נדרשת הכרעה לאחר קריאת התוכן המלא');
   if(h.needsApproval)return outcome('review','סימון כללי בהקלדה או בהקראה מחייב אישור ידני לעברית');
   if(h.kind==='spelling' && !/עברית|לשון/.test(value))return outcome('review','יש לאשר שהתעלמות משגיאות כתיב חלה בעברית');

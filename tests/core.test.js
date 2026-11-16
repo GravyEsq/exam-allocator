@@ -20,7 +20,7 @@ test('English typing column never grants Hebrew typing even with Hebrew cell not
 test('iTest verbose subjects cancels typing and does not grant a computer',()=>{const a=interpretCell('הקלדה','X (בitest רבי מלל)',11);assert.equal(a.status,'excluded');const s=make(1,{time:25})[0];assert.equal(effective(s).computer,false);});
 test('English reading, mathematics and verbose adaptations are excluded; low text needs review',()=>{for(const h of ['הקראה באנגלית','מבחן מותאם במתמטיקה','הקלדה - רבי מלל'])assert.equal(interpretCell(h,'X',11).status,'excluded');assert.equal(interpretCell('הקראת שאלון - דלי מלל','X',11).status,'review');});
 test('generic X typing and reading require review by explicit user instruction',()=>{for(const h of ['הקלדה','הקראת שאלון'])assert.equal(interpretCell(h,'X',11).status,'review');assert.equal(interpretCell('הקלדה בעברית','X',11).status,'granted');});
-test('negative and limiting notes and H are not automatic eligibility',()=>{assert.equal(interpretCell('הקלדה בעברית','X (לא זכאי)',11).status,'excluded');assert.equal(interpretCell('תוספת זמן 25%','H',11).status,'review');assert.equal(interpretCell('תוספת זמן 25%','X (באופן זמני עד אפריל)',11).status,'review');assert.equal(interpretCell('הקלדה בעברית','X (במבחנים באנגלית בלבד)',11).status,'excluded');});
+test('negative and limiting notes are not automatic eligibility',()=>{assert.equal(interpretCell('הקלדה בעברית','X (לא זכאי)',11).status,'excluded');assert.equal(interpretCell('תוספת זמן 25%','H',11).status,'granted');assert.equal(interpretCell('תוספת זמן 25%','X (באופן זמני עד אפריל)',11).status,'review');assert.equal(interpretCell('הקלדה בעברית','X (במבחנים באנגלית בלבד)',11).status,'excluded');});
 test('unknown positive columns require review and cannot grant eligibility',()=>{assert.equal(interpretCell('זכאות חדשה','X',11).status,'review');assert.equal(interpretCell('זכאות חדשה','',11).status,'empty');});
 test('original 25 and 33 percent values are preserved separately in provenance',()=>{const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','תוספת זמן 25%','תוספת זמן 33%'],['001234567','שם פיקטיבי','יא',1,'X','X']]);assert.equal(effective(students[0]).time,33);assert.deepEqual(students[0].original.accommodations.map(a=>a.amount),[25,33]);});
 test('grade 10 never gets a small class from either Excel or manual changes',()=>{assert.equal(interpretCell('כיתה מצומצמת','X',10).status,'excluded');const s=make(1,{grade:10,small:true})[0];s.manual.accommodations.small=true;assert.equal(effective(s).small,false);});
@@ -44,3 +44,18 @@ test('reports restrict each document to one grade, show only public student info
 test('independent audit detects missing, duplicates, capacity and social violations',()=>{const ss=make(5),rooms=[regular('A',1,4)];const r=audit(ss,rooms,{A:[ss[0].key,ss[0].key,...ss.slice(1).map(s=>s.key)]});assert.ok(r.errors.length>=2);assert.equal(audit(ss,rooms,{A:[ss[0].key]}).missing.length,4);});
 
 test('apostrophes inside names are ignored rather than splitting a name',()=>{const ss=make(1);ss[0].name="ג׳ורג׳ כהן";assert.equal(candidates('כהן גורג',ss).length,1);});
+
+test('X and H are equivalent markers across column rules, restrictions and grade rules',()=>{
+ const headers=['תוספת זמן 25%','תוספת זמן 33%','הקלדה בעברית','הקראה בעברית','הקלדה','הקראת שאלון','הגדלת שאלון','כיתה מצומצמת','מבחן מותאם בעברית','התעלמות משגיאות כתיב','הקלדה - אנגלית','הקראת שאלון - דלי מלל','עמודה לא מוכרת'];
+ for(const grade of [10,11])for(const header of headers)for(const note of ['',' (עברית)',' (בitest רבי מלל)',' (לא זכאי)',' (באופן זמני עד אפריל)',' (אנגלית בלבד)']){
+  const x=interpretCell(header,'X'+note,grade),h=interpretCell(header,'H'+note,grade);
+  for(const key of ['status','reason','kind','amount'])assert.deepEqual(h[key],x[key],`${header}: ${key}, ${note}, ${grade}`);
+  assert.equal(h.source.value,'H'+note);
+ }
+ assert.equal(interpretCell('הקלדה בעברית','h',11).status,'granted');
+ assert.equal(interpretCell('הקלדה בעברית','HH',11).status,'review');
+});
+test('H imports time and Hebrew typing while preserving the original Excel value',()=>{
+ const {students}=parseRows([['ת.ז','שם התלמיד','שכבה','כיתה','תוספת זמן 33%','הקלדה בעברית'],['001234567','שם פיקטיבי','יא',1,'H',''],['001234568','שם בדיקה','יא',2,'','H']]);
+ assert.equal(effective(students[0]).time,33);assert.equal(effective(students[0]).computer,false);assert.equal(effective(students[1]).typing,true);assert.equal(effective(students[1]).computer,true);assert.equal(students[0].original.accommodations[0].source.value,'H');assert.equal(dataProblems(students).length,0);
+});
