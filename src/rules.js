@@ -45,6 +45,8 @@ export function interpretCell(header,raw,grade) {
   if(['id','name','grade','classroom','metadata'].includes(h.kind)) return outcome('metadata','');
   // Excluded columns never acquire an exception from their cell contents.
   if(h.kind==='excluded')return outcome('excluded',h.reason);
+  const standaloneNote=value.replace(/^[xh](?=\s|$|\()/i,'').replace(/[()[\]{}]/g,'').trim();
+  if(/^(?:לא|ללא|אין|שלילי|no|false)$/i.test(standaloneNote))return outcome('excluded','שלילה מפורשת בתוכן התא');
   if(/(?:לא|אינו|אינה)\s*זכאי|אין\s*זכאות|מבוטל|בוטל|נשלל|שלילה/.test(value)||/^(?:0|לא|ללא|אין|[-–])$/.test(value))return outcome('excluded','שלילה או ביטול בתוכן התא');
   const negatedKind={typing:/ללא\s*הקלדה|אין\s*הקלדה/,reading:/ללא\s*הקראה|אין\s*הקראה/,time:/ללא\s*תוספת\s*זמן|אין\s*תוספת\s*זמן/,small:/ללא\s*כיתה\s*מצומצמת/,enlarged:/ללא\s*הגדלה/,adapted:/ללא\s*מבחן\s*מותאם/,spelling:/ללא\s*התעלמות\s*משגיאות/};
   if(negatedKind[h.kind]?.test(value))return outcome('excluded','שלילה מפורשת של ההתאמה בתוכן התא');
