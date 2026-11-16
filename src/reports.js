@@ -31,16 +31,20 @@ export function reportHTML(type,grade,students,rooms,result){
  for(const r of rooms){
   const keys=result.assignments[r.id]||[],allMembers=students.filter(s=>keys.includes(s.key)),members=sortedStudents(allMembers.filter(s=>s.grade===Number(grade)));
   if(!members.length)continue;
-  if(members.length>38)throw new Error(`בחדר ${r.name} יש יותר מ־38 תלמידים; אין אפשרות להבטיח עמוד אחד`);
-  const title=`<header><span class="room-count">${members.length} נבחנים · שכבה ${h(gradeLabel(Number(grade)))}</span><h1>חדר ${h(r.name)}</h1><h2>בחינה בעברית / לשון${type==='supervisor'?` · ${h(roomSubtitle(allMembers))}${allMembers.length!==members.length?' · משותף לכמה שכבות':''}`:''}</h2></header>`;
+  if(members.length>38&&!result.manualPlacements?.length)throw new Error(`בחדר ${r.name} יש יותר מ־38 תלמידים; אין אפשרות להבטיח עמוד אחד`);
+  const pageCount=Math.ceil(members.length/38);
+  for(let page=0;page<pageCount;page++){
+  const pageMembers=members.slice(page*38,(page+1)*38);
+  const title=`<header><span class="room-count">${pageMembers.length} נבחנים · שכבה ${h(gradeLabel(Number(grade)))}${pageCount>1?` · חלק ${page+1} מתוך ${pageCount} · ${members.length} בחדר`:''}</span><h1>חדר ${h(r.name)}</h1><h2>בחינה בעברית / לשון${type==='supervisor'?` · ${h(roomSubtitle(allMembers))}${allMembers.length!==members.length?' · משותף לכמה שכבות':''}`:''}</h2></header>`;
   let body;
   if(type==='students'){
-   const half=Math.ceil(members.length/2),columns=[members.slice(0,half),members.slice(half)];
+   const half=Math.ceil(pageMembers.length/2),columns=[pageMembers.slice(0,half),pageMembers.slice(half)];
    body='<p class="legend">סדר הקריאה: הטור הימני מלמעלה למטה, ואחריו הטור השמאלי.</p><div class="parallel">'+columns.map((col,i)=>`<div><div class="column-label">${i===0?'טור ראשון — ימין':'טור שני — שמאל'}</div><table><colgroup><col style="width:80%"><col style="width:20%"></colgroup><thead><tr><th>שם</th><th>כיתה</th></tr></thead><tbody>${col.map(s=>`<tr><td>${h(s.name)}</td><td>${h(classLabel(s))}</td></tr>`).join('')}</tbody></table></div>`).join('')+'</div>';
   }else{
-   body=`<table class="supervisor"><colgroup><col style="width:5%"><col style="width:28%"><col style="width:7%"><col style="width:40%"><col style="width:10%"><col style="width:10%"></colgroup><thead><tr><th>מס׳</th><th>שם</th><th>כיתת אם</th><th>התאמות</th><th>נוכחות</th><th>הגשה</th></tr></thead><tbody>${members.map((s,i)=>`<tr><td>${i+1}</td><td class="name">${h(s.name)}</td><td>${h(classLabel(s))}</td><td>${h(supervisorAccommodations(s))}</td><td class="mark"></td><td class="mark"></td></tr>`).join('')}</tbody></table><p class="key">מקרא: מצומצמת = כיתה מצומצמת; מותאם = מבחן מותאם בעברית; כתיב = התעלמות משגיאות כתיב.</p>`;
+   body=`<table class="supervisor"><colgroup><col style="width:5%"><col style="width:28%"><col style="width:7%"><col style="width:40%"><col style="width:10%"><col style="width:10%"></colgroup><thead><tr><th>מס׳</th><th>שם</th><th>כיתת אם</th><th>התאמות</th><th>נוכחות</th><th>הגשה</th></tr></thead><tbody>${pageMembers.map((s,i)=>`<tr><td>${page*38+i+1}</td><td class="name">${h(s.name)}</td><td>${h(classLabel(s))}</td><td>${h(supervisorAccommodations(s))}</td><td class="mark"></td><td class="mark"></td></tr>`).join('')}</tbody></table><p class="key">מקרא: מצומצמת = כיתה מצומצמת; מותאם = מבחן מותאם בעברית; כתיב = התעלמות משגיאות כתיב.</p>`;
   }
   roomPages.push(`<section class="sheet">${title}${body}</section>`);
+  }
  }
  if(!roomPages.length)throw new Error('אין נבחנים משובצים בשכבה שנבחרה');
  return `<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><title>דוח ${type==='students'?'תלמידים':'משגיחים'} — ${h(gradeLabel(Number(grade)))}</title><style>${PRINT_CSS}</style></head><body>${roomPages.join('')}</body></html>`;
@@ -48,8 +52,8 @@ export function reportHTML(type,grade,students,rooms,result){
 const csvCell=value=>{let v=String(value??'');if(/^[=+@\-\t\r]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"';};
 export function assignmentCSV(students,rooms,result){
  if(!result?.complete)throw new Error('ייצוא זמין רק לאחר שיבוץ מלא ועדכני');
- const rows=[['ת.ז','שם התלמיד','שכבה','כיתת אם','חדר','התאמות']];
- for(const s of sortedStudents(students.filter(s=>s.active))){const id=Object.keys(result.assignments).find(r=>result.assignments[r].includes(s.key));if(!id)throw new Error('תלמיד חסר בתוצאה');rows.push([s.id,s.name,gradeLabel(s.grade),classLabel(s),rooms.find(r=>r.id===id).name,accommodationText(s)]);}
+ const manual=result.manualPlacements||[],rows=[['ת.ז','שם התלמיד','שכבה','כיתת אם','חדר','התאמות',...(manual.length?['אופן השיבוץ','הערה להחלטה']:[])]];
+ for(const s of sortedStudents(students.filter(s=>s.active))){const id=Object.keys(result.assignments).find(r=>result.assignments[r].includes(s.key));if(!id)throw new Error('תלמיד חסר בתוצאה');const decision=manual.find(m=>m.key===s.key);rows.push([s.id,s.name,gradeLabel(s.grade),classLabel(s),rooms.find(r=>r.id===id).name,accommodationText(s),...(manual.length?[decision?'ידני':'אוטומטי',decision?.note||'']:[])]);}
  return '\uFEFF'+rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
 }
 export function download(content,name,type='text/plain;charset=utf-8'){const url=URL.createObjectURL(new Blob([content],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000);}

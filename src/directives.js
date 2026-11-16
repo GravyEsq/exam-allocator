@@ -5,6 +5,7 @@ export const classKey=s=>`${s.grade}:${s.classroom}`;
 export const classFromKey=key=>{const [grade,classroom]=String(key).split(':').map(Number);return {grade,classroom};};
 export const className=key=>classLabel(classFromKey(key));
 export const pairParticipant=(s,d)=>d.type==='pair'&&d.classes.includes(classKey(s))&&!effective(s).computer&&!effective(s).small;
+export const pairRoom=(r,d)=>r.type==='regular'&&!r.smallOnly&&d.classes.includes(classKey(r));
 export function directiveLabel(d){return d.type==='pair'?`צימוד חצי־חצי: ${d.classes.map(className).join(' + ')}`:`ללא ערבוב: ${className(d.classes[0])}`;}
 export function validateDirectives(directives,students,{allowMixedGrades=false}={}){
  const errors=[],available=new Set(students.filter(s=>s.active).map(classKey)),used=new Set();
@@ -33,7 +34,7 @@ export function auditDirectives(members,room,directives){
   }else{
    const paired=members.filter(s=>pairParticipant(s,d));if(!paired.length)continue;
    const a=paired.filter(s=>classKey(s)===d.classes[0]).length,b=paired.length-a;
-   if(room.type!=='regular'||room.smallOnly||paired.length!==members.length||!a||!b||Math.abs(a-b)>1)errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; נדרשות שתי הכיתות בלבד ופער של עד תלמיד אחד`);
+   if(!pairRoom(room,d)||paired.length!==members.length||!a||!b||Math.abs(a-b)>1)errors.push(`${room.name}: הופרה הנחיית ${directiveLabel(d)}; נדרשים חדרי האם של שתי הכיתות בלבד ופער של עד תלמיד אחד`);
   }
  }
  return errors;

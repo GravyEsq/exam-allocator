@@ -9,12 +9,59 @@ import {defaultRooms,ensureGrade11Class7Room} from '../src/rooms.js';
 import {allocate,audit,eligible} from '../src/allocator.js';
 import {classKey,pairParticipant,validateDirectives} from '../src/directives.js';
 import {reportHTML,assignmentCSV} from '../src/reports.js';
+import {placeManually,undoManualPlacement,reapplyManualPlacements} from '../src/manual-allocation.js';
 const require=createRequire(import.meta.url),glpk=require('../vendor/glpk-node.cjs')();
 const make=(n,{grade=11,classroom=1,typing=false,reading=false,time=0,small=false}={})=>Array.from({length:n},(_,i)=>({key:`${grade}:${classroom}:${typing}:${small}:${time}:${i}`,id:String(800000000+(grade-10)*1000000+classroom*10000+i),name:`תלמיד פיקטיבי ${classroom} ${i}`,grade,classroom,active:true,manual:{accommodations:{}},issues:[],original:{sheet:'פיקטיבי',row:i+2,identity:{},accommodations:Object.entries({typing,reading,time,small}).filter(([,v])=>v).map(([kind,amount])=>({kind,amount,source:{type:'excel',column:kind,value:'X'}})),excluded:[]}}));
 const pc=(id,capacity=38,smallCapacity=15)=>({id,name:id,type:'computer',enabled:true,computer:true,capacity,smallCapacity,grade:null,classroom:null});
 const regular=(id,classroom=1,capacity=38)=>({id,name:id,type:'regular',enabled:true,computer:false,capacity,smallCapacity:Math.min(15,capacity),grade:11,classroom});
 const pair={type:'pair',classes:['11:1','11:2']},isolate={type:'isolate',classes:['11:1']};
 function uniqueIds(ss){ss.forEach((s,i)=>s.id=String(900000000+i));return ss;}
+
+test('pairing stays in the original two home rooms even if other rooms have free capacity',async()=>{
+ const ss=[...make(20),...make(20,{classroom:2})],rooms=[regular('a',1,10),regular('b',2,10),regular('unrelated',3,38)];
+ const r=await allocate(ss,rooms,glpk,{directives:[pair]});assert.equal(r.complete,false);assert.ok(!r.assignments.unrelated?.length);assert.equal(r.unassigned.length,20);assert.match(r.unassigned[0].reason,/חדרי האם/);
+ const wrong={unrelated:[...ss.slice(0,4),...ss.slice(20,24)].map(s=>s.key)};assert.ok(audit(ss,rooms,wrong,{directives:[pair]}).errors.some(s=>s.includes('חדרי האם')));
+ rooms[0].name='שם החדר שונה';assert.equal(eligible(ss[0],rooms[0],{directives:[pair]}),true);assert.equal(eligible(ss[0],rooms[2],{directives:[pair]}),false);
+ const missing=await allocate(ss,[{...rooms[0],enabled:false},{...rooms[1],enabled:false},rooms[2]],glpk,{directives:[pair]});assert.equal(missing.unassigned.length,40);assert.match(missing.unassigned[0].reason,/אין חדר אם פתוח/);
+});
+test('manual allocation overrides social and capacity rules, updates counts, and can be undone without data loss',async()=>{
+ const ss=make(3),rooms=[regular('a',1,2)],base=await allocate(ss,rooms,glpk),snapshot=JSON.stringify(base);let r=base;
+ for(const s of ss)r=placeManually(r,ss,rooms,s.key,'a',{},'החלטת בית הספר');
+ assert.equal(JSON.stringify(base),snapshot);assert.equal(r.complete,true);assert.deepEqual(r.stats,{assigned:3,unassigned:0,atHome:3});assert.equal(r.optimal,false);assert.equal(r.manualPlacements.length,3);assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('קיבולת')));assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('קבוצה של 3')));
+ const undone=undoManualPlacement(r,ss,rooms,ss[0].key);assert.equal(undone.complete,false);assert.equal(undone.stats.assigned,2);assert.equal(undone.unassigned[0].key,ss[0].key);assert.equal(undone.manualPlacements.length,2);assert.match(undone.unassigned[0].reason,/רק 3/);
+});
+test('manual placement bypasses computer, small-class, disabled and closed-room restrictions without altering entitlements',async()=>{
+ const ss=make(2,{typing:true,small:true,time:25}),rooms=[{...regular('closed',7,1),type:'closed',enabled:false}];let r=await allocate(ss,rooms,glpk);
+ const sources=JSON.stringify(ss);for(const s of ss)r=placeManually(r,ss,rooms,s.key,'closed');
+ assert.equal(r.complete,true);assert.equal(JSON.stringify(ss),sources);const warnings=r.overrideWarnings.flatMap(w=>w.messages).join(' ');for(const text of ['חדר לא מתאים','מצומצמת','אינו מסומן כפתוח','יחידה שלמה','קיבולת'])assert.ok(warnings.includes(text),warnings);
+ assert.equal(effective(ss[0]).computer,true);assert.equal(effective(ss[0]).small,true);
+});
+test('manual decisions may override pairing, isolation and cross-grade separation',async()=>{
+ const ss=[...make(4),...make(4,{classroom:2})],rooms=[regular('a',1,2),regular('b',2,2),{...regular('other',3),grade:10}],options={directives:[pair]};let r=await allocate(ss,rooms,glpk,options);
+ r=placeManually(r,ss,rooms,ss[0].key,'other',options);assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('חדרי האם')));assert.ok(r.overrideWarnings[0].messages.some(s=>s.includes('חדר לא מתאים')));
+ const mix=[...make(4,{typing:true}),...make(4,{classroom:2,typing:true})],pcRooms=[pc('pc',8,8)],isolation={directives:[isolate]};let isolated=await allocate(mix,pcRooms,glpk,isolation);for(const u of [...isolated.unassigned])isolated=placeManually(isolated,mix,pcRooms,u.key,'pc',isolation);assert.equal(isolated.complete,true);assert.ok(isolated.overrideWarnings[0].messages.some(s=>s.includes('ללא ערבוב')));
+});
+test('manual allocation never introduces duplicates, unknown pupils, inactive pupils or unknown rooms',async()=>{
+ const ss=make(3),rooms=[regular('a')],base=await allocate(ss,rooms,glpk);
+ assert.throws(()=>placeManually(base,ss,rooms,ss[0].key,'unknown'),/חדר קיים/);assert.throws(()=>placeManually(base,ss,rooms,'unknown','a'),/נבחן פעיל/);
+ const inactive=structuredClone(ss);inactive[0].active=false;assert.throws(()=>placeManually(base,inactive,rooms,ss[0].key,'a'),/נבחן פעיל/);
+ const first=placeManually(base,ss,rooms,ss[0].key,'a'),again=placeManually(first,ss,rooms,ss[0].key,'a');assert.equal(again.assignments.a.length,1);assert.equal(again.manualPlacements.length,1);
+ const corrupt={...first,assignments:{a:[ss[0].key,ss[0].key]}};assert.throws(()=>placeManually(corrupt,ss,rooms,ss[1].key,'a'),/יותר מחדר אחד/);
+ const assigned=await allocate(make(4),rooms,glpk);assert.throws(()=>placeManually(assigned,make(4),rooms,make(4)[0].key,'a'),/כבר משובץ/);
+});
+test('manual choices survive recalculation and can be moved without leaving a duplicate in the automatic room',async()=>{
+ const ss=make(3),rooms=[regular('a'),regular('b',2)],partial=await allocate(ss,rooms,glpk),manual=placeManually(partial,ss,rooms,ss[0].key,'b',{},'הערה');
+ const automatic={complete:true,assignments:{a:ss.map(s=>s.key)},unassigned:[],errors:[]};const restored=reapplyManualPlacements(automatic,manual.manualPlacements,ss,rooms);
+ assert.equal(restored.complete,true);assert.equal(restored.assignments.a.length,2);assert.deepEqual(restored.assignments.b,[ss[0].key]);assert.equal(restored.manualPlacements[0].note,'הערה');assert.equal(new Set(Object.values(restored.assignments).flat()).size,3);
+ const moved=placeManually(restored,ss,rooms,ss[0].key,'a',{},'עודכן');assert.equal(moved.assignments.b.length,0);assert.equal(moved.assignments.a.length,3);assert.equal(moved.manualPlacements.length,1);
+ const inactive=structuredClone(ss);inactive[0].active=false;const absent=reapplyManualPlacements({assignments:{a:ss.slice(1).map(s=>s.key)},unassigned:[]},manual.manualPlacements,inactive,rooms);assert.equal(absent.stats.assigned,2);assert.equal(absent.manualPlacements.length,1);
+ const removed=reapplyManualPlacements(automatic,manual.manualPlacements,ss,rooms.slice(0,1));assert.equal(removed.manualPlacements.length,0);assert.match(removed.manualNotices[0],/החדר הוסר/);
+});
+test('manual overflow prints all pupils on numbered pages and exports the decision without executing notes',async()=>{
+ const ss=make(40,{time:25}),rooms=[regular('a')];let r=await allocate(ss,rooms,glpk);for(const u of [...r.unassigned])r=placeManually(r,ss,rooms,u.key,'a',{},'=1+1');assert.equal(r.complete,true);
+ for(const kind of ['students','supervisor']){const html=reportHTML(kind,11,ss,rooms,r);assert.equal((html.match(/class="sheet"/g)||[]).length,2);assert.ok(html.includes('חלק 1 מתוך 2'));assert.ok(html.includes('חלק 2 מתוך 2'));for(const s of ss)assert.equal(html.split(`>${s.name}</td>`).length-1,1);}
+ const csv=assignmentCSV(ss,rooms,r);assert.ok(csv.includes('אופן השיבוץ'));assert.ok(csv.includes('ידני'));assert.ok(csv.includes("'=1+1"));assert.equal(csv.split('\r\n').length,41);
+});
 
 test('paired home classes balance every ordinary room and exclude a third class',async()=>{
  const ss=[...make(20),...make(20,{classroom:2}),...make(4,{classroom:3})],rooms=[regular('a',1,28),regular('b',2,28),regular('c',3,10)];

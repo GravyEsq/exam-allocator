@@ -1,11 +1,12 @@
 """Validate printed synthetic fixture PDFs, after browser-qa.mjs; no student source files."""
 from pathlib import Path
+import sys
 from pypdf import PdfReader
 import pdfplumber
 
 root = Path(__file__).resolve().parent.parent / 'qa'
 for kind in ['students', 'supervisor']:
-    path = root / f'{kind}-38-long-names.pdf'
+    path = root / (f'manual-{kind}-42.pdf' if '--manual' in sys.argv else f'{kind}-38-long-names.pdf')
     reader = PdfReader(path)
     assert len(reader.pages) == 2, (kind, len(reader.pages))
     with pdfplumber.open(path) as pdf:

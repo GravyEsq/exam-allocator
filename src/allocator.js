@@ -1,7 +1,7 @@
 import {effective} from './rules.js';
 import {classLabel,validateStudent} from './normalize.js';
 import {validateRooms} from './rooms.js';
-import {classKey,classFromKey,pairParticipant,validateDirectives,auditDirectives,directiveLabel} from './directives.js';
+import {classKey,pairParticipant,pairRoom,validateDirectives,auditDirectives,directiveLabel} from './directives.js';
 
 export function eligible(s,r,{allowMixedGrades=false,directives=[]}={}){
  const e=effective(s);
@@ -9,8 +9,9 @@ export function eligible(s,r,{allowMixedGrades=false,directives=[]}={}){
  if(s.grade===11&&s.classroom===7)return r.type==='closed'&&r.grade===11&&r.classroom===7&&(!e.computer||r.computer);
  if(r.type==='fixed'||r.type==='closed')return false;
  if(s.classroom===7)return false; // Other grade-7 policies require explicit school instructions.
- const pairedRoom=allowMixedGrades&&r.type==='regular'&&directives.some(d=>pairParticipant(s,d)&&d.classes.some(key=>classFromKey(key).grade===r.grade));
- return (r.type==='computer'||r.grade===s.grade||pairedRoom) && (!e.computer||r.computer);
+ const pairing=directives.find(d=>pairParticipant(s,d));
+ if(pairing)return pairRoom(r,pairing)&&(allowMixedGrades||r.grade===s.grade);
+ return (r.type==='computer'||r.grade===s.grade) && (!e.computer||r.computer);
 }
 function groupStudents(students){
  const map=new Map();for(const s of students){const e=effective(s),k=[s.grade,s.classroom,e.computer,e.small,!!e.time].join(':');if(!map.has(k))map.set(k,{key:k,students:[],grade:s.grade,classroom:s.classroom,computer:e.computer,small:e.small,time:!!e.time});map.get(k).students.push(s);}return [...map.values()];
@@ -131,6 +132,8 @@ export function diagnose(s,students,rooms,{timedOut=false,directives=[],allowMix
   const needsSmall=students.some(t=>t.grade===11&&t.classroom===7&&effective(t).small),capacity=needsSmall||room.smallOnly?Math.min(room.capacity,room.smallCapacity):room.capacity;
   return `י״א7 חייבת להיבחן יחד: ${count} תלמידים, וקיבולת החדר לפי הדרישות היא ${capacity}${needsSmall?' בגלל זכאות לכיתה מצומצמת':''}. יש להתאים את הקיבולת והציוד לכל הכיתה; לא יועברו אליה תלמידים אחרים ולא יפוצלו תלמידיה`;
  }
+ const pairing=directives.find(d=>pairParticipant(s,d));
+ if(!eligibleRooms.length&&pairing)return `${directiveLabel(pairing)}: אין חדר אם פתוח שמתאים לצימוד. יש לפתוח את חדרי האם של שתי הכיתות; חדרים אחרים בשכבה אינם משמשים את הצימוד. אפשר גם לבחור חדר בשיבוץ ידני`;
  if(!eligibleRooms.length)return e.fixed?'יש לפתוח את חדר י׳7 ולוודא אמצעי מחשב והקראה לכיתה כולה':e.computer?'אין חדר מתאים למחשב; פתחו את 319 או מעבדה נוספת':'אין חדר רגיל מתאים לשכבה; הוסיפו חדר או הפעילו חדר קיים';
  if(e.computer&&!e.fixed){const needed=students.filter(t=>effective(t).computer&&!effective(t).fixed&&!(t.grade===11&&t.classroom===7)).length,available=rooms.filter(r=>r.computer&&r.type!=='fixed'&&r.type!=='closed').reduce((n,r)=>n+(r.smallOnly?Math.min(r.capacity,r.smallCapacity):r.capacity),0);if(needed>available)return `${needed} תלמידים זקוקים למחשב, אך בחדרי המחשב הפתוחים יש ${available} מקומות בלבד. חסרים לפחות ${needed-available} מקומות; פתחו מעבדה נוספת או הגדילו קיבולת בחדר מתאים`;
  }
@@ -140,7 +143,7 @@ export function diagnose(s,students,rooms,{timedOut=false,directives=[],allowMix
   const timeout=timedOut?' זמן החיפוש הסתיים; אפשר גם להאריך אותו.':'';
   if(directive.type==='pair'&&pairParticipant(s,directive)){
    const counts=directive.classes.map(k=>students.filter(t=>classKey(t)===k&&pairParticipant(t,directive)).length),regular=eligibleRooms.filter(r=>r.type==='regular'&&!r.smallOnly);
-   return `${directiveLabel(directive)}: ${counts.join(' מול ')} נבחנים לצימוד, ${regular.length} חדרים רגילים מתאימים. בכל חדר נדרשות שתי הכיתות בלבד ופער של עד תלמיד אחד, תוך שמירת הקבוצות החברתיות. יש לפתוח חדרים רגילים נוספים עם קיבולת לשתי הקבוצות, או לשנות את הצימוד אם המספרים אינם מאפשרים איזון.${timeout}`;
+   return `${directiveLabel(directive)}: ${counts.join(' מול ')} נבחנים לצימוד, ${regular.length} חדרי אם פתוחים. הצימוד מוגבל לחדרי האם של שתי הכיתות בלבד, עם פער של עד תלמיד אחד ושמירת הקבוצות החברתיות. יש לפתוח את חדרי האם, להתאים את קיבולותיהם, לשנות את הצימוד או לבחור חדר ידנית.${timeout}`;
   }
   if(directive.type==='isolate')return `${directiveLabel(directive)} מחייבת חדרים בלעדיים לכיתה, גם במחשב ובכיתה מצומצמת. יש לפתוח חדר מתאים נוסף או לשנות את ההנחיה; ניתן לפצל את הכיתה בין חדרים ללא ערבוב.${timeout}`;
  }
